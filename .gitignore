@@ -1,0 +1,27 @@
+# cartella con bollette
+bollette/
+
+# file pdf
+*.pdf
+
+# file excel
+*.xlsx
+
+# database
+*.db
+
+# file di configurazione
+.env
+
+# cache python
+__pycache__/
+*.pyc
+
+*.xlsx
+*.xls
+bollette/
+fabriano/
+
+*.csv
+
+*.txt
