@@ -1,13 +1,38 @@
-# cartella con bollette
-bollette/
+# File generati dall'applicazione (non committare dati sensibili)
+# Rimuovi commenti per includere se necessario
 
-# file pdf
+# API key (sensibile - mai committare!)
+api.txt
+
+# Output dati estratti (CSV/XLSX con dati bollette)
+estrazione_tutti_mesi.csv
+estrazione_tutti_mesi.xlsx
+bollette_raggruppate.xlsx
+
+# Cartelle con bollette originali
+bollette/
 *.pdf
 
-# file excel
-*.xlsx
+# Ambiente virtuale Python
+venv/
+env/
+.venv/
 
-# database
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Log
+*.log
 *.db
 
 # file di configurazione
@@ -18,6 +43,13 @@ __pycache__/
 *.pyc
 
 *.xlsx
+
+# Output files
+estrazione_tutti_mesi.csv
+estrazione_tutti_mesi.xlsx
+
+# Temporary files
+*.tmp
 *.xls
 bollette/
 fabriano/

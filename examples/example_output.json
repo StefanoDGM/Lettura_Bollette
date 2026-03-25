@@ -1,0 +1,25 @@
+{
+  "rows": [
+    {
+      "nome_cliente": "Cliente Esempio",
+      "pdr": "IT001E123456789",
+      "pod": "",
+      "data_inizio": "01/01/2024",
+      "data_fine": "31/01/2024",
+      "consumo_totale": "100.5",
+      "dettaglio_voce": "Materia energia",
+      "unita_misura": "Smc",
+      "quantita": "100.5",
+      "prezzo_aliquota": "0.5",
+      "importo": "50.25",
+      "imponibile_mese": "100.0",
+      "note": "",
+      "tensione_alimentazione": "",
+      "manca_dettaglio": "no",
+      "potenza_disponibile": "",
+      "potenza_impegnata": "",
+      "data_indirizzo": "",
+      "_source_file": "bolletta.pdf"
+    }
+  ]
+}
