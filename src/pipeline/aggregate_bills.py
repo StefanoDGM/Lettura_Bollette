@@ -6,18 +6,11 @@ Prende `estrazione_tutti_mesi.csv` e genera `bollette_raggruppate.xlsx`.
 
 Uso:
     python src/pipeline/aggregate_bills.py [input_csv] [output_xlsx]
-
-Esempi:
-    python src/pipeline/aggregate_bills.py
-    python src/pipeline/aggregate_bills.py estrazione_tutti_mesi.csv bollette_raggruppate.xlsx
-
-Se non specificato, usa i file nella root del progetto.
 """
 
 import argparse
 import csv
 import re
-
 from pathlib import Path
 from typing import Optional
 
@@ -112,23 +105,6 @@ def month_name_it(month_number: int) -> str:
     return months.get(int(month_number), "")
 
 
-def consumo_moda(series: pd.Series) -> float:
-    """
-    Non sommare: consumo del mese come moda.
-    - Se unica moda -> quella
-    - Se piu mode -> prendi la prima
-    - Se non ci sono numeri -> NaN
-    - Fallback: ultimo non-NaN
-    """
-    values = series.dropna().astype(float).round(6)
-    if values.empty:
-        return np.nan
-    mode = values.mode()
-    if len(mode) >= 1:
-        return float(mode.iloc[0])
-    return float(values.iloc[-1])
-
-
 def is_si(value: str) -> bool:
     """Return True if the text is equivalent to 'si'."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -136,6 +112,16 @@ def is_si(value: str) -> bool:
     text = str(value).strip().lower()
     text = text.replace("\u00ec", "i")
     return text in {"si", "yes", "true", "1", "y"}
+
+
+def unique_float_values(series: pd.Series) -> list[float]:
+    values = series.dropna().astype(float).round(6)
+    return sorted(values.unique().tolist())
+
+
+def join_unique_text(series: pd.Series) -> str:
+    values = sorted({str(value).strip() for value in series.dropna() if str(value).strip()})
+    return " | ".join(values)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -199,6 +185,57 @@ def resolve_output_path(output_path_arg: Optional[str]) -> Path:
     return (Path.cwd() / raw_path).resolve()
 
 
+def compute_consumo_mese(
+    group: pd.DataFrame,
+    col_cons_totale: str,
+    col_cons_dettaglio: Optional[str],
+) -> dict[str, object]:
+    """Choose month consumption using total or signed detail depending on recalculation signals."""
+    consumo_totale_values = unique_float_values(group[col_cons_totale])
+    detail_series = (
+        group[col_cons_dettaglio].dropna().astype(float)
+        if col_cons_dettaglio and col_cons_dettaglio in group.columns
+        else pd.Series(dtype=float)
+    )
+    detail_sum = float(detail_series.sum()) if not detail_series.empty else np.nan
+    detail_rows = int(detail_series.notna().sum()) if not detail_series.empty else 0
+    detail_reconstructible = bool(detail_rows > 0 and (~group["_manca_det_consumo_bool"]).any())
+    source_file_distinti = int(group["_source_file"].dropna().nunique()) if "_source_file" in group.columns else 0
+    has_positive_detail = bool((detail_series > 0).any()) if detail_rows else False
+    has_negative_detail = bool((detail_series < 0).any()) if detail_rows else False
+    mese_ricalcolato = (
+        source_file_distinti > 1
+        or len(consumo_totale_values) > 1
+        or (has_positive_detail and has_negative_detail)
+    )
+
+    if mese_ricalcolato and detail_reconstructible:
+        consumo_mese = detail_sum
+        logica = "somma_consumo_dettaglio_riga_ricalcolo"
+    elif detail_reconstructible:
+        consumo_mese = detail_sum
+        logica = "somma_consumo_dettaglio_riga"
+    elif len(consumo_totale_values) == 1 and not mese_ricalcolato:
+        consumo_mese = float(consumo_totale_values[0])
+        logica = "consumo_totale"
+    else:
+        consumo_mese = np.nan
+        logica = "consumo_non_ricostruibile"
+
+    return {
+        "consumo_mese": consumo_mese,
+        "consumo_logica_usata": logica,
+        "mese_ricalcolato": mese_ricalcolato,
+        "source_file_distinti": source_file_distinti,
+        "consumi_totali_distinti": len(consumo_totale_values),
+        "consumo_valori_distinti": len(consumo_totale_values),
+        "consumo_dettaglio_righe": detail_rows,
+        "consumo_dettaglio_sum": detail_sum,
+        "manca_dettaglio_consumo_mese": not detail_reconstructible,
+        "source_file_elenco": join_unique_text(group["_source_file"]) if "_source_file" in group.columns else "",
+    }
+
+
 def aggregate_bolletta_data(
     input_path: str | Path = INPUT_PATH,
     out_xlsx: str | Path = OUT_XLSX,
@@ -220,10 +257,18 @@ def aggregate_bolletta_data(
 
     col_importo = find_col(df, ["importo", "importi", "valore", "totale_riga"])
     col_imponibile = find_col(df, ["imponibile_mese", "imponibile mese", "imponibile"])
-    col_cons = find_col(df, ["consumo_totale", "consumo", "consumi"])
+    col_cons_totale = find_col(df, ["consumo_totale", "consumo", "consumi"])
+    col_cons_dettaglio = find_col(
+        df,
+        ["consumo_dettaglio_riga", "consumo dettaglio riga", "dettaglio_consumo_riga"],
+    )
     col_manca_dett = find_col(
         df,
         ["manca_dettaglio", "manca dettaglio", "senza_dettaglio", "senza dettaglio"],
+    )
+    col_manca_dett_consumo = find_col(
+        df,
+        ["manca_dettaglio_consumo", "manca dettaglio consumo", "senza_dettaglio_consumo"],
     )
     col_voce = find_col(df, ["dettaglio_voce", "voce", "descrizione", "descrizione_voce"])
     col_data = (
@@ -234,7 +279,7 @@ def aggregate_bolletta_data(
     )
 
     missing = []
-    if not col_cons:
+    if not col_cons_totale:
         missing.append("consumo_totale/consumo")
     if not col_data:
         missing.append("data_fine/data_inizio/data_fattura/data")
@@ -245,10 +290,17 @@ def aggregate_bolletta_data(
 
     print(
         "Colonne usate ->",
-        f"consumo: '{col_cons}', data: '{col_data}',",
+        f"consumo_totale: '{col_cons_totale}',",
+        f"consumo_dettaglio_riga: '{col_cons_dettaglio}'" if col_cons_dettaglio else "consumo_dettaglio_riga: (assente)",
+        f"data: '{col_data}',",
         f"importo: '{col_importo}'" if col_importo else "importo: (assente)",
         f"imponibile_mese: '{col_imponibile}'" if col_imponibile else "imponibile_mese: (assente)",
         f"manca_dettaglio: '{col_manca_dett}'" if col_manca_dett else "manca_dettaglio: (assente)",
+        (
+            f"manca_dettaglio_consumo: '{col_manca_dett_consumo}'"
+            if col_manca_dett_consumo
+            else "manca_dettaglio_consumo: (assente)"
+        ),
         f"voce: '{col_voce}'" if col_voce else "voce: (assente)",
     )
 
@@ -256,13 +308,20 @@ def aggregate_bolletta_data(
         df[col_importo] = df[col_importo].apply(to_float)
     if col_imponibile:
         df[col_imponibile] = df[col_imponibile].apply(to_float)
-    df[col_cons] = df[col_cons].apply(to_float)
+    df[col_cons_totale] = df[col_cons_totale].apply(to_float)
+    if col_cons_dettaglio:
+        df[col_cons_dettaglio] = df[col_cons_dettaglio].apply(to_float)
     df[col_data] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
 
     if col_manca_dett:
         df["_manca_det_bool"] = df[col_manca_dett].apply(is_si)
     else:
         df["_manca_det_bool"] = False
+
+    if col_manca_dett_consumo:
+        df["_manca_det_consumo_bool"] = df[col_manca_dett_consumo].apply(is_si)
+    else:
+        df["_manca_det_consumo_bool"] = True
 
     rows_before = len(df)
     df = df.dropna(subset=[col_data]).copy()
@@ -275,7 +334,7 @@ def aggregate_bolletta_data(
     df["mese"] = df["mese_num"].apply(month_name_it)
 
     def agg_per_mese(group: pd.DataFrame) -> pd.Series:
-        consumo = consumo_moda(group[col_cons])
+        consumo_info = compute_consumo_mese(group, col_cons_totale, col_cons_dettaglio)
         manca_det_mese = bool(group["_manca_det_bool"].any())
 
         if manca_det_mese:
@@ -300,7 +359,6 @@ def aggregate_bolletta_data(
             else:
                 importo_finale = np.nan
 
-        consumo_nuniq = group[col_cons].dropna().astype(float).round(6).nunique()
         imponibile_nuniq = (
             group[col_imponibile].dropna().nunique()
             if col_imponibile and col_imponibile in group.columns
@@ -310,9 +368,17 @@ def aggregate_bolletta_data(
         return pd.Series(
             {
                 "totale_importi": importo_finale,
-                "consumo_mese": consumo,
+                "consumo_mese": consumo_info["consumo_mese"],
+                "consumo_logica_usata": consumo_info["consumo_logica_usata"],
+                "source_file_distinti": consumo_info["source_file_distinti"],
+                "source_file_elenco": consumo_info["source_file_elenco"],
+                "consumi_totali_distinti": consumo_info["consumi_totali_distinti"],
+                "consumo_valori_distinti": consumo_info["consumo_valori_distinti"],
+                "mese_ricalcolato": consumo_info["mese_ricalcolato"],
+                "consumo_dettaglio_righe": consumo_info["consumo_dettaglio_righe"],
+                "consumo_dettaglio_sum": consumo_info["consumo_dettaglio_sum"],
                 "manca_dettaglio_mese": manca_det_mese,
-                "consumo_valori_distinti": consumo_nuniq,
+                "manca_dettaglio_consumo_mese": consumo_info["manca_dettaglio_consumo_mese"],
                 "imponibile_valori_distinti": imponibile_nuniq,
                 "righe": len(group),
             }
@@ -326,11 +392,29 @@ def aggregate_bolletta_data(
     agg["mese"] = agg["mese_num"].apply(month_name_it)
     agg = agg.sort_values(["anno", "mese_num"]).reset_index(drop=True)
 
-    out = agg[["anno", "mese", "totale_importi", "consumo_mese"]].copy()
+    out = agg[
+        [
+            "anno",
+            "mese",
+            "totale_importi",
+            "consumo_mese",
+            "consumo_logica_usata",
+            "mese_ricalcolato",
+            "source_file_distinti",
+            "source_file_elenco",
+            "consumi_totali_distinti",
+            "consumo_dettaglio_righe",
+            "consumo_dettaglio_sum",
+            "manca_dettaglio_consumo_mese",
+        ]
+    ].copy()
     out["totale_importi"] = out["totale_importi"].map(
         lambda value: "" if pd.isna(value) else f"{value:.2f}".replace(".", ",")
     )
     out["consumo_mese"] = out["consumo_mese"].map(
+        lambda value: "" if pd.isna(value) else str(value).replace(".", ",")
+    )
+    out["consumo_dettaglio_sum"] = out["consumo_dettaglio_sum"].map(
         lambda value: "" if pd.isna(value) else str(value).replace(".", ",")
     )
     out_xlsx.parent.mkdir(parents=True, exist_ok=True)

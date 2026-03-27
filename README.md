@@ -42,7 +42,7 @@ progetto_bollette/
 run_full_pipeline.py (Script autonomo completo)
     ↓
 ├── Estrazione da PDF (usa src/extractor, src/ai, src/parser)
-│   ├── Limita pagine PDF (max 8)
+│   ├── Limita pagine PDF (max 12)
 │   ├── Invia a GPT-4 con prompt strutturato
 │   └── Parsa JSON risposta in righe dati
 │       ↓
@@ -65,7 +65,7 @@ run_full_pipeline.py (Script autonomo completo)
 - **run_full_pipeline.py**: Script principale autonomo che fa tutto il processo end-to-end
 - **process_bolletta.py**: Script autonomo per estrazione. Include logica di limitazione PDF, chiamate GPT e parsing
 - **aggregate_bills.py**: Script autonomo per aggregazione. Include logica di mapping colonne, conversioni e raggruppamento
-- **pdf_extractor.py**: Utility per ridurre pagine PDF (max 8 per performance)
+- **pdf_extractor.py**: Utility per ridurre pagine PDF (max 12 per performance)
 - **gpt_client.py**: Gestisce chiamate OpenAI con retry e fallback modelli
 - **bolletta_parser.py**: Converte risposte JSON GPT in righe tabellari
 - **file_utils.py**: Utility per API key e gestione file (non mostrato in struttura)

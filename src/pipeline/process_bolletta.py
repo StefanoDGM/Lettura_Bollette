@@ -14,8 +14,10 @@ Codice autonomo: include tutta la logica di estrazione senza dipendenze esterne.
 
 import argparse
 import logging
+import re
 import sys
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 import pandas as pd
@@ -41,6 +43,14 @@ SLEEP_S = 0.5
 DEFAULT_INPUT_DIR_CANDIDATES = (
     root / "data",
     root / "tests" / "data",
+)
+DECIMAL_EXPORT_COLUMNS = (
+    "consumo_totale",
+    "consumo_dettaglio_riga",
+    "quantita",
+    "prezzo_aliquota",
+    "importo",
+    "imponibile_mese",
 )
 
 
@@ -99,6 +109,45 @@ def extract_rows_from_pdf(pdf_path: Path, model: str) -> list[dict]:
     return call_gpt_with_pdf(pdf_to_use, model)
 
 
+def normalize_decimal_for_export(value):
+    """Normalize decimal strings to use ',' before saving CSV/XLSX."""
+    if value is None or pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    if "." in text and "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", ".")
+
+    text = re.sub(r"[^0-9\.\-]", "", text)
+    if text in ("", "-", ".", "-."):
+        return ""
+
+    try:
+        normalized = format(Decimal(text).normalize(), "f")
+    except InvalidOperation:
+        return str(value)
+
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    if normalized in ("-0", "-0.0"):
+        normalized = "0"
+    return normalized.replace(".", ",")
+
+
+def normalize_export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize numeric-like export columns so Excel receives a consistent decimal separator."""
+    normalized_df = df.copy()
+    for column in DECIMAL_EXPORT_COLUMNS:
+        if column in normalized_df.columns:
+            normalized_df[column] = normalized_df[column].apply(normalize_decimal_for_export)
+    return normalized_df
+
+
 def process_all_pdfs(input_dir: Path,
                      pattern: str,
                      out_csv: str,
@@ -150,7 +199,7 @@ def process_all_pdfs(input_dir: Path,
             logging.error(f"[ERROR] {fp.name}: {err}")
             continue
 
-        pd.DataFrame(all_rows).to_csv(out_csv, index=False, encoding="utf-8")
+        normalize_export_dataframe(pd.DataFrame(all_rows)).to_csv(out_csv, index=False, encoding="utf-8")
         logging.info(f"  +{len(rows)} righe (totale: {len(all_rows)})")
         if sleep_s > 0:
             time.sleep(sleep_s)
@@ -159,7 +208,7 @@ def process_all_pdfs(input_dir: Path,
         logging.info("[DONE] nessuna riga estratta.")
         return None
 
-    df = pd.DataFrame(all_rows)
+    df = normalize_export_dataframe(pd.DataFrame(all_rows))
     df.to_excel(out_xlsx, index=False)
     logging.info(f"[DONE] Righe totali: {len(df)}")
     logging.info(f"  CSV : {out_csv}")

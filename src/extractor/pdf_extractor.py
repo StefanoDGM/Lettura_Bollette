@@ -3,7 +3,7 @@ from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 from typing import Optional
 
-MAX_PAGES = 8
+MAX_PAGES = 12
 
 def limit_pdf_pages(pdf_path: Path, max_pages: int = MAX_PAGES) -> Path:
     """

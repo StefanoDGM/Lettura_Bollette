@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.ai.gpt_client import build_pdf_input_content
+from src.ai.gpt_client import JSON_SCHEMA, build_pdf_input_content
 
 
 class TestGptClient(unittest.TestCase):
@@ -26,6 +26,15 @@ class TestGptClient(unittest.TestCase):
             content["file_data"],
             f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode('utf-8')}",
         )
+
+    def test_json_schema_contains_new_consumption_fields(self):
+        properties = JSON_SCHEMA["schema"]["properties"]["rows"]["items"]["properties"]
+        required = JSON_SCHEMA["schema"]["properties"]["rows"]["items"]["required"]
+
+        self.assertIn("consumo_dettaglio_riga", properties)
+        self.assertIn("manca_dettaglio_consumo", properties)
+        self.assertIn("consumo_dettaglio_riga", required)
+        self.assertIn("manca_dettaglio_consumo", required)
 
 
 if __name__ == "__main__":
