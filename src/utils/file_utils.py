@@ -1,7 +1,5 @@
-import os
 import json
 import os
-import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -26,19 +24,16 @@ def _find_file_upwards(filename: str, start_dir: Optional[Path] = None, max_leve
 
 
 def load_api_key(api_file: str = "api.txt") -> Optional[str]:
-    """Load API key from file if exists.
-
-    This will search upward from the current working directory to find the file.
-    """
+    """Load API key from file if exists."""
     api_path = _find_file_upwards(api_file)
     if not api_path:
         return None
 
-    with open(api_path, "r", encoding="utf-8") as f:
-        content = f.read().strip()
-        # Assuming the key is the last line or something, but in file it's the key
+    with open(api_path, "r", encoding="utf-8") as file_obj:
+        content = file_obj.read().strip()
         lines = content.split("\n")
         for line in lines:
             if line.startswith("sk-"):
                 return line.strip()
     return None
+

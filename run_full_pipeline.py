@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 # Assicura che il package "src" sia importabile (da root)
 # Inseriamo la root del progetto (parent di src) nel path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,18 +40,68 @@ RETRIES = 3
 SLEEP_S = 0.5
 
 
-def full_pipeline(input_dir: Path) -> Optional[dict]:
+def get_pipeline_output_paths(output_dir: Optional[Path] = None) -> dict[str, Path]:
+    """Resolve the three pipeline report paths."""
+    base_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "csv": base_dir / "estrazione_tutti_mesi.csv",
+        "xlsx": base_dir / "estrazione_tutti_mesi.xlsx",
+        "aggregated": base_dir / "bollette_raggruppate.xlsx",
+    }
+
+
+def extract_warning_report(aggregated_df: pd.DataFrame) -> pd.DataFrame:
+    """Return only months that contain final warnings for the interface/report layer."""
+    if aggregated_df is not None:
+        attr_report = aggregated_df.attrs.get("warning_report")
+        if isinstance(attr_report, pd.DataFrame):
+            return attr_report.copy()
+
+    if aggregated_df is None or aggregated_df.empty or "warning_count" not in aggregated_df.columns:
+        return pd.DataFrame()
+
+    warning_df = aggregated_df.loc[
+        aggregated_df["warning_count"].fillna(0).astype(int) > 0,
+        [column for column in [
+            "anno",
+            "mese",
+            "warning_count",
+            "warning_mese",
+            "source_file_elenco",
+            "metodi_ripartizione_ricalcolo",
+            "consumo_logica_usata",
+            "importo_logica_usata",
+        ] if column in aggregated_df.columns],
+    ].copy()
+    return warning_df.reset_index(drop=True)
+
+
+def full_pipeline(input_dir: Path, output_dir: Optional[Path] = None) -> Optional[dict]:
     """Esegue estrazione + aggregazione utilizzando gli script componenti."""
-    out_csv = "estrazione_tutti_mesi.csv"
-    out_xlsx = "estrazione_tutti_mesi.xlsx"
+    output_paths = get_pipeline_output_paths(output_dir)
     pattern = "*.pdf"
 
-    extracted_df = process_all_pdfs(input_dir, pattern, out_csv, out_xlsx, RESUME, RETRIES, SLEEP_S)
+    extracted_df = process_all_pdfs(
+        input_dir,
+        pattern,
+        str(output_paths["csv"]),
+        str(output_paths["xlsx"]),
+        RESUME,
+        RETRIES,
+        SLEEP_S,
+    )
     if extracted_df is None:
         return None
 
-    aggregated_df = aggregate_bolletta_data(out_csv, "bollette_raggruppate.xlsx")
-    return {"extracted": extracted_df, "aggregated": aggregated_df}
+    aggregated_df = aggregate_bolletta_data(output_paths["csv"], output_paths["aggregated"])
+    return {
+        "extracted": extracted_df,
+        "aggregated": aggregated_df,
+        "warnings": extract_warning_report(aggregated_df),
+        "files": output_paths,
+        "platform_alerts": extracted_df.attrs.get("platform_alerts", []) if extracted_df is not None else [],
+    }
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
 import base64
 import json
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -15,141 +16,145 @@ from src.parser.bolletta_parser import parse_gpt_response
 # Modello principale + fallback
 MODEL_PRIMARY = os.environ.get("OPENAI_MODEL", "gpt-5")
 MODEL_FALLBACK = "gpt-5"
+ROOT = Path(__file__).resolve().parents[2]
 
 _client: OpenAI | None = None
 
 PROMPT = """
 OBIETTIVO
-Estrarre da una bolletta luce/gas:
-A) METADATI (1 per documento)
-B) RIGHE DI DETTAGLIO MENSILI
+Estrarre da una bolletta luce/gas SOLO righe economiche mensili e i campi necessari al post-processing finale.
 
-PERIODO DI RIFERIMENTO
-- Considera SOLO il livello mensile.
+PRINCIPIO
+Analizza le bollette e NON calcolare risultati finali su piu bollette.
+Estrai solo dati corretti e coerenti del singolo documento.
+
+PERIODO
+- Usa SOLO il livello mensile.
 - Ignora dettagli giornalieri, orari o per fasce.
-- Se coesistono dati giornalieri e mensili, usa SOLO quelli mensili.
-- Ogni riga deve riferirsi a un periodo mensile coerente.
+- Se coesistono dati giornalieri e mensili, usa i mensili.
+- Ogni riga deve avere un periodo mensile coerente.
 
-PRINCIPI GENERALI
-- Le righe contengono solo voci economiche reali del periodo: corrispettivi, trasporto, oneri, imposte, conguagli, ricalcoli, storni.
-- Le righe negative sono ammesse e vanno mantenute.
-- NON inserire righe per totali, imponibile, IVA, totale documento, totale da pagare, riepiloghi, arrotondamenti, subtotali o preventivi dei mesi successivi.
-- I valori di riepilogo vanno nei metadati o in `imponibile_mese`.
-- NON includere le more: non sono voci di consumo ma sanzioni/oneri extra.
-- NON includere preventivi dei mesi successivi: non sono ancora voci economiche ufficiali del periodo e dovrebbero comparire nelle bollette successive come voci reali.
+RIGHE DA INCLUDERE
+Solo voci economiche reali del periodo, positive o negative:
+- vendita, trasporto/distribuzione, oneri, imposte/accise/addizionali
+- conguagli, storni, ricalcoli
 
-ECCEZIONE IMPOSTE
-- Accise, addizionali e imposte di consumo devono sempre essere incluse come righe.
-- Se esistono come righe economiche singole o in dettaglio fiscale, includile normalmente.
-- Se esistono solo come totale aggregato senza righe economiche che le compongono, includi una sola riga con `manca_dettaglio="si"`.
+RIGHE DA ESCLUDERE
+tutto ciò che non è una voce economica mensile reale del periodo, come ad esempio:
+NON creare righe per:
+- Totale*
+- Imponibile*
+- IVA*
+- Totale documento
+- Totale da pagare
+- Riepilogo*
+- Arrotondamenti*
+- Subtotali
+- Preventivi di mesi successivi
+- More / sanzioni / solleciti
 
-DEFINIZIONE CORRETTA DI `manca_dettaglio`
-- `manca_dettaglio` e' un flag documentale per il dettaglio economico.
-- Vale "no" quando il documento contiene abbastanza righe economiche da ricostruire il netto/imponibile del periodo.
-- Vale "si" solo quando esiste un totale/imponibile del periodo ma mancano le righe economiche necessarie a ricostruirlo.
-- Se esistono righe positive e negative di storno/ricalcolo che consentono di ricostruire il netto, allora `manca_dettaglio="no"`.
-- Nelle bollette di conguaglio, ricalcolo o storno, la presenza di storni, acconti, recuperi o piu imponibili nello stesso mese NON implica mancanza di dettaglio. Se il totale e' ricostruibile dalle righe economiche, `manca_dettaglio="no"`.
+  ECCEZIONE IMPOSTE
+  Accise, addizionali e imposte di consumo vanno incluse come righe.
+  Se esistono solo come totale aggregato, includi una sola riga e usa `manca_dettaglio="si"`.
+  - Se il riepilogo economico del mese mostra `Altre partite` o voce equivalente che contribuisce al totale della fornitura/imponibile,
+    includi una riga macro `tipo_componente="altro"` anche se il PDF non dettaglia le sottovoci.
+  - NON includerla solo se il documento chiarisce che si tratta esclusivamente di more, sanzioni o soli solleciti esclusi.
 
-DEFINIZIONE CORRETTA DI `manca_dettaglio_consumo`
-- `manca_dettaglio_consumo` e' un flag documentale per il dettaglio dei consumi.
-- Vale "no" quando il documento contiene abbastanza righe di quantita con segno per ricostruire il consumo del periodo.
-- Vale "si" quando esiste un `consumo_totale` del periodo ma NON ci sono righe di quantita sufficienti per ricostruirlo.
-- Il flag non si decide guardando la singola riga: valuta la ricostruibilita del consumo nell'intero documento per quel periodo.
-- Ripeti lo stesso valore di `manca_dettaglio_consumo` su tutte le righe dello stesso documento/periodo.
+MANCANZA DI DETTAGLIO ECONOMICO
+- `manca_dettaglio` e' un flag documentale.
+- `no` se le righe economiche bastano a ricostruire netto/imponibile del periodo.
+- `si` solo se esiste un totale/imponibile ma mancano le righe economiche per ricostruirlo.
+- Se righe positive e negative di storno/ricalcolo bastano a ricostruire il netto, usa `no`.
+- Ripeti lo stesso valore su tutte le righe dello stesso documento/periodo.
 
-CONSUMI: DIFFERENZA TRA TOTALE E DETTAGLIO
-- `consumo_totale` = consumo totale dichiarato per il periodo nel documento.
-- `consumo_dettaglio_riga` = quantita con segno SOLO quando la riga rappresenta davvero consumo del periodo o storno/ricalcolo di consumo.
-- Usa `consumo_dettaglio_riga` per righe come energia/consumo/prelievo/gas/storno consumo/ricalcolo quantita.
-- NON usare `consumo_dettaglio_riga` su righe economiche che mostrano kWh/Smc/mc solo come base tariffaria ma non sono una riga di consumo autonoma: trasporto, oneri, perdite, dispacciamento, quota fissa, quota potenza, imposte.
-- Se una riga di consumo e' uno storno o ricalcolo, mantieni il segno negativo/positivo in `consumo_dettaglio_riga`.
-- Se il documento non consente di ricostruire il consumo tramite righe di quantita, lascia `consumo_dettaglio_riga` vuoto e imposta `manca_dettaglio_consumo="si"`.
+CONSUMI
+- `consumo_totale` = consumo totale dichiarato per il PERIODO DELLA RIGA / DEL MESE ESTRATTO, non il totale complessivo del documento se il documento copre piu mesi.
+- `consumo_dettaglio_riga` = quantita con segno SOLO se la riga rappresenta davvero consumo del periodo o storno/ricalcolo di consumo.
+- Casi validi: una singola riga autonoma di consumo del periodo, oppure un ricalcolo/storno con segni.
+- Le normali righe importi che ripetono kWh/Smc/mc solo come base tariffaria NON sono dettaglio consumo.
+- Se la stessa quantita e' solo base tariffaria su righe come CCR, prezzo mercato, trasporto, oneri, perdite, dispacciamento, quote fisse/potenza, imposte ecc., lascia `consumo_dettaglio_riga=""` e usa `manca_dettaglio_consumo="si"`.
+- Se serve una riga separata per rappresentare correttamente il consumo, creala con `importo=""`.
+- Se in bollette successive compare un valore vecchio e uno nuovo per lo stesso mese, NON sommarli come dettaglio economico: estrai solo eventuali righe di consumo/storno e il `consumo_totale`.
+- `manca_dettaglio_consumo="no"` solo se il documento consente davvero di ricostruire il consumo tramite righe di quantita.
+- Se esiste `consumo_totale` ma manca una vera riga autonoma di consumo oppure una coppia di ricalcolo/storno con segni sufficiente a ricostruirlo, usa `si`.
+- `manca_dettaglio_consumo` e' un flag documentale: ripetilo su tutte le righe dello stesso documento/periodo.
+- Se il documento ha un periodo generale multi-mese ma nelle righe del dettaglio o nelle tabelle consumi compaiono quantita separate per il singolo mese, usa per `consumo_totale` il valore del singolo mese e NON il totale aggregato del documento.
+- Esempio: se il documento dice totale fatturato luglio+agosto = 74.569 ma le righe del mese agosto usano 15.037, allora per agosto `consumo_totale=15037`.
+- Questa logica vale sia per GAS sia per LUCE.
+- Nelle bollette elettriche usa lo stesso criterio: privilegia il valore mensile del mese, anche se il documento contiene fasce F1/F2/F3, energia, perdite, potenza o tabelle riassuntive.
+- Le fasce F1/F2/F3 o le componenti di potenza possono aiutare a capire il consumo del mese, ma non implicano da sole che l'importo del mese sia ricostruibile con certezza.
 
-SEZIONE A) METADATI
-- fornitore_nome
-- fornitore_piva
-- numero_fattura
-- data_fattura (gg/mm/aaaa)
-- periodo_inizio
-- periodo_fine
-- cliente_nome
-- cliente_piva_cf
-- indirizzo_fornitura
-- pod (luce)
-- pdr (gas)
-- tensione_alimentazione
-- potenza_disponibile
-- potenza_impegnata
-- imponibile_mese
-- totale_iva
-- totale_documento
-- totale_da_pagare
-- aliquote_iva_applicate
+FLAG DOCUMENTALI OBBLIGATORI
+- `presenza_ricalcolo` = "si" se il documento contiene storni, conguagli, ricalcoli ex art. 6.2, importi gia contabilizzati in bollette precedenti, acconti fatture precedenti o righe negative che rettificano periodi gia fatturati.
+- `ricalcolo_aggregato_multi_mese` = "si" se il ricalcolo/storno si riferisce a piu mesi insieme o a un intervallo multi-mese non allocabile direttamente a un solo mese.
+- Questi flag sono documentali: ripetili su tutte le righe dello stesso documento/periodo.
 
-SEZIONE B) RIGHE DI DETTAGLIO
-- Una riga = una voce economica mensile.
-- Mantieni il testo originale della bolletta in `dettaglio_voce`.
-- Se una voce economica e' presente in forma positiva e in forma negativa, includi entrambe.
+RICALCOLI AGGREGATI
+- Se una riga appartiene a un blocco come "Ricalcoli dal ... al ..." o a un ricalcolo aggregato riferito a piu mesi precedenti, valorizza i campi dedicati.
+- NON distribuire il ricalcolo sui mesi originari.
+- Privilegia righe con periodo/data esplicita.
+- Se una riga non ha data specifica, includila solo se utile a capire il costo maturato; se il blocco resta troppo aggregato, mantienilo come ricalcolo aggregato e segnala dettaglio insufficiente.
+- Se compaiono righe riferite a mesi diversi, mantienile separate con il loro periodo corretto.
+- Se una riga e' un ricalcolo di altri mesi, NON farla contribuire al dettaglio del mese corrente: assegnale il proprio periodo o mantienila come ricalcolo separato.
 
-CAMPI PER RIGA
-- nome_cliente
-- pod / pdr
-- data_inizio
-- data_fine
-- consumo_totale
-- consumo_dettaglio_riga
-- dettaglio_voce
-- unita_misura
-- quantita
-- prezzo_aliquota
-- importo
-- imponibile_mese
-- tensione_alimentazione
-- potenza_disponibile
-- potenza_impegnata
-- data_indirizzo
-- manca_dettaglio ("si"/"no")
-- manca_dettaglio_consumo ("si"/"no")
-- note
+CLASSIFICAZIONE COMPONENTE
+Usa SOLO uno di questi valori per `tipo_componente`:
+- `fissa` = quote/canoni indipendenti dal consumo
+- `variabile` = energia, gas, consumo, prelievo, voci dipendenti da kWh/Smc/mc
+- `imposte` = accise, addizionali, imposte di consumo
+- `trasporto` = trasporto, distribuzione, dispacciamento chiaramente classificabili
+- `oneri` = oneri di sistema o analoghi
+- `ricalcolo_aggregato` = ricalcolo multi-mese presente ma non classificabile con sufficiente certezza
+- `altro` = ultima scelta
+- Esempi pratici gas A2A: `Quota Fissa` o unita come `€/mese/IG` => `fissa`; `Quota Proporzionale rispetto ai consumi` o `€/Smc` sulla materia gas => `variabile`; `CRVBL`, `CRVI`, `CVu`, trasporto/contatore => `trasporto`; accise/addizionali => `imposte`.
 
-REGOLE ANTI-DUPLICAZIONE
-1) Escludi qualsiasi riga che sia un totale o riepilogo: Totale*, Imponibile*, IVA*, Riepilogo*, Arrotondamenti*, Totale documento*, Totale da pagare*.
-2) Se una riga contiene la parola "Totale", trattala come riepilogo e NON inserirla come riga di dettaglio, salvo il caso in cui NON esistano altre righe economiche sottostanti per quella sezione e serva una sola riga aggregata.
-3) Usa il blocco di dettaglio economico; usa riepilogo/sintesi solo se il dettaglio economico non esiste davvero.
-4) Se il documento contiene abbastanza righe economiche per ricostruire il netto, `manca_dettaglio="no"`.
-5) Se il documento contiene abbastanza righe di quantita per ricostruire il consumo, `manca_dettaglio_consumo="no"`.
+CAMPI RICALCOLO
+- `riferimento_ricalcolo_da` e `riferimento_ricalcolo_a` = intervallo del ricalcolo se esplicitato
+- Se la riga NON appartiene a un ricalcolo o non ha intervallo esplicito, lascia vuoti questi campi.
+
+TABELLE DI DETTAGLIO MENSILI
+- Se il documento contiene una tabella esplicita come "Elementi di dettaglio dal ... al ...", considera valide come righe tutte le voci economiche sottostanti di vendita, trasporto/distribuzione e imposte.
+- In questo caso NON restituire `rows: []` solo perche nella stessa pagina esistono anche riepiloghi o totali.
+- Escludi solo le righe di totale, IVA, subtotale, totale documento o totale da pagare.
+- Se nella stessa tabella la quantita del mese e' solo ripetuta sulle righe economiche come base di calcolo, NON copiare quella quantita in `consumo_dettaglio_riga` su tutte le righe.
 
 IMPUTAZIONE IMPONIBILE
-- `imponibile_mese` rappresenta l'imponibile del periodo al netto IVA.
-- NON confondere `imponibile_mese` con `totale_documento`, `totale_da_pagare` o `totale_iva`.
-- Se il PDF riporta esplicitamente un imponibile IVA o una base imponibile del periodo, usa quello come `imponibile_mese`.
-- Se il PDF riporta sia un totale spesa sia un imponibile fiscale, scegli come `imponibile_mese` la base imponibile del periodo al netto IVA.
-- `imponibile_mese` deve essere coerente con il periodo mensile e non con il totale finale comprensivo di IVA.
-- Se nello stesso documento esistono conguagli, storni o acconti, l'imponibile del periodo deve comunque essere quello riferito al periodo mensile estratto.
-
-ISTRUZIONI IMPORTANTI SU CONGUAGLI E STORNI
-- In presenza di conguagli, ricalcoli o storni:
-  - includi le righe positive
-  - includi le righe negative
-  - non eliminare una riga solo perche compensa un'altra
-  - non considerare gli storni come assenza di dettaglio
-- Se una riga negativa descrive chiaramente una categoria economica (es. "Storno importo calcolato in precedenza ..."), allora e' una riga economica valida.
-- Se il documento consente di ricostruire il netto del mese tramite righe positive e negative, allora `manca_dettaglio="no"`.
+- `imponibile_mese` = imponibile del periodo al netto IVA.
+- NON confonderlo con `totale_documento`, `totale_da_pagare` o `totale_iva`.
+- Se esiste una base imponibile del periodo esplicita, usa quella; se esistono sia totale spesa sia imponibile fiscale, usa la base imponibile al netto IVA.
+- Nei casi standard senza ricalcoli e con un solo mese, privilegia il valore del blocco `Riepilogo IVA` / `Imponibile` della fornitura.
+- Se il riepilogo IVA contiene voci tipo `Art. 15`, `Esclusa Art.15` o analoghe, quella quota e' esclusa dall'imponibile IVA: `imponibile_mese` deve restare il valore imponibile fiscale dichiarato nel riepilogo IVA, non la somma lorda delle macro-voci della spesa totale.
+- NON sottrarre automaticamente tutta la voce `Altre partite`: sottrai solo l'eventuale quota che il PDF dichiara esplicitamente esclusa dall'imponibile IVA.
+- Deve essere coerente con il periodo mensile estratto.
+- Se `manca_dettaglio="no"` e il documento mostra righe economiche sufficienti, `imponibile_mese` deve essere coerente con la somma delle righe economiche incluse.
+- Se NON ci sono ricalcoli e il dettaglio del mese non torna con l'imponibile fiscale, prova a ricontrollare entrambe le letture ma mantieni `imponibile_mese` uguale al valore fiscale del documento.
+- Se ci sono ricalcoli o righe di altri mesi, il totale fiscale del documento puo non coincidere col solo mese corrente: in quel caso il dettaglio del mese e i flag di ricalcolo sono piu informativi del totale documento.
+- Se il documento contiene ricalcoli o righe di altri mesi, usa riepilogo/imponibile solo come controllo: NON lasciare che righe di altri periodi entrino nel dettaglio del mese.
+- Una tabella mensile dei consumi aiuta a ricostruire il consumo del mese, ma da sola NON implica che anche l'importo mensile sia ricostruibile.
 
 NORMALIZZAZIONI
 - Numeri: usa il punto come separatore decimale, senza separatore migliaia, mantenendo il segno.
 - Date: gg/mm/aaaa.
 - Testi: usa le diciture della bolletta.
 - Se un campo non e' applicabile alla riga, restituisci stringa vuota.
+- Compila ESATTAMENTE i campi previsti dallo schema JSON.
+
+REGOLE FINALI
+- Una riga = una voce economica mensile.
+- Mantieni le righe negative.
+- Se una voce esiste sia positiva sia negativa, includile entrambe.
+- Non inventare righe mancanti.
+- Non fare somme finali.
+- Non fare distribuzioni sui mesi originari.
 
 OUTPUT
-- Restituisci SOLO JSON valido:
+Restituisci SOLO JSON valido con struttura:
 {
-  "metadati": { ... },
   "rows": [ ... ]
 }
-- Nessun testo fuori dal JSON.
+Nessun testo fuori dal JSON.
 """
+
 
 JSON_SCHEMA = {
     "name": "righe_bolletta",
@@ -169,6 +174,9 @@ JSON_SCHEMA = {
                         "data_fine": {"type": "string"},
                         "consumo_totale": {"type": ["number", "string"]},
                         "consumo_dettaglio_riga": {"type": ["number", "string"]},
+                        "tipo_componente": {"type": "string"},
+                        "riferimento_ricalcolo_da": {"type": "string"},
+                        "riferimento_ricalcolo_a": {"type": "string"},
                         "dettaglio_voce": {"type": "string"},
                         "unita_misura": {"type": "string"},
                         "quantita": {"type": ["number", "string"]},
@@ -179,6 +187,8 @@ JSON_SCHEMA = {
                         "tensione_alimentazione": {"type": "string"},
                         "manca_dettaglio": {"type": "string"},
                         "manca_dettaglio_consumo": {"type": "string"},
+                        "presenza_ricalcolo": {"type": "string"},
+                        "ricalcolo_aggregato_multi_mese": {"type": "string"},
                         "potenza_disponibile": {"type": "string"},
                         "potenza_impegnata": {"type": "string"},
                         "data_indirizzo": {"type": "string"},
@@ -190,11 +200,16 @@ JSON_SCHEMA = {
                         "data_fine",
                         "consumo_totale",
                         "consumo_dettaglio_riga",
+                        "tipo_componente",
+                        "riferimento_ricalcolo_da",
+                        "riferimento_ricalcolo_a",
                         "dettaglio_voce",
                         "importo",
                         "imponibile_mese",
                         "manca_dettaglio",
                         "manca_dettaglio_consumo",
+                        "presenza_ricalcolo",
+                        "ricalcolo_aggregato_multi_mese",
                     ],
                 },
             }
@@ -244,25 +259,57 @@ def build_pdf_input_content(pdf_path: Path) -> dict[str, str]:
     }
 
 
-def call_gpt_with_pdf(pdf_path: Path, model: str) -> List[Dict[str, Any]]:
-    """Call GPT with the PDF and return parsed rows."""
+def persist_empty_rows_debug(pdf_path: Path, raw_response: str) -> None:
+    """Persist the raw model output when a PDF returns zero rows."""
+    debug_dir = ROOT / "debug_empty_rows"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_path = debug_dir / f"{pdf_path.stem}.raw_response.json"
+    debug_path.write_text(raw_response, encoding="utf-8")
+    logging.warning("Risposta GPT con 0 righe salvata in: %s", debug_path)
+
+
+def _call_rows_prompt(
+    pdf_path: Path,
+    model: str,
+    prompt_text: str,
+    context_hint: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Call GPT with a prompt that must return rows JSON."""
     if not pdf_path.exists():
         raise FileNotFoundError(f"File non trovato: {pdf_path}")
 
     client = get_openai_client()
     input_file = build_pdf_input_content(pdf_path)
 
+    prompt_with_context = prompt_text
+    if context_hint:
+        prompt_with_context = (
+            f"{prompt_text}\n\n"
+            "CONTESTO INFORMATIVO DEL RUN (solo per sanity check, non vincolante)\n"
+            "- I valori seguenti arrivano da bollette gia elaborate in questo stesso run.\n"
+            "- Servono solo per farti notare ordini di grandezza e coerenza numerica.\n"
+            "- NON usarli per fare confronti multi-documento o per cambiare il significato del PDF corrente.\n"
+            f"{context_hint}\n"
+        )
+
     try:
         rsp = client.responses.create(
             model=model,
-            instructions="Analizza il PDF e restituisci SOLO JSON aderente allo schema.",
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": PROMPT},
-                    input_file,
-                ],
-            }],
+            instructions=(
+                "Analizza il PDF e restituisci SOLO JSON valido aderente allo schema. "
+                "Non aggiungere testo fuori dal JSON. "
+                "Non fare calcoli finali multi-documento. "
+                "Estrai solo dati del singolo documento."
+            ),
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt_with_context},
+                        input_file,
+                    ],
+                }
+            ],
             response_format={"type": "json_schema", "json_schema": JSON_SCHEMA},
             max_output_tokens=200_000,
         )
@@ -277,19 +324,21 @@ def call_gpt_with_pdf(pdf_path: Path, model: str) -> List[Dict[str, Any]]:
     except TypeError:
         rsp = client.responses.create(
             model=model,
-            input=[{
-                "role": "user",
-                "content": [
-                    input_file,
-                    {
-                        "type": "input_text",
-                        "text": (
-                            f"{PROMPT}\n\nRESTITUISCI SOLO JSON valido con radice {{\"rows\": [...]}} "
-                            f"aderente ESATTAMENTE a questo schema (nessun testo extra):\n{json.dumps(JSON_SCHEMA)}"
-                        ),
-                    },
-                ],
-            }],
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        input_file,
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"{prompt_with_context}\n\nRESTITUISCI SOLO JSON valido con radice {{\"rows\": [...]}} "
+                                f"aderente ESATTAMENTE a questo schema (nessun testo extra):\n{json.dumps(JSON_SCHEMA)}"
+                            ),
+                        },
+                    ],
+                }
+            ],
             max_output_tokens=200_000,
         )
         raw = getattr(rsp, "output_text", "") or ""
@@ -302,9 +351,63 @@ def call_gpt_with_pdf(pdf_path: Path, model: str) -> List[Dict[str, Any]]:
             raw = "".join(parts)
         start, end = raw.find("{"), raw.rfind("}")
         if start >= 0 and end > start:
-            raw = raw[start:end + 1]
+            raw = raw[start : end + 1]
 
     if not raw:
         raise RuntimeError(f"Risposta vuota dal modello su: {pdf_path.name}")
 
-    return parse_gpt_response(raw, pdf_path.name)
+    rows = parse_gpt_response(raw, pdf_path.name)
+    if not rows:
+        logging.warning("Il modello ha restituito 0 righe per %s", pdf_path.name)
+        persist_empty_rows_debug(pdf_path, raw)
+    return rows
+
+
+def call_gpt_with_pdf(pdf_path: Path, model: str, context_hint: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Call GPT with the standard extraction prompt and return parsed rows."""
+    return _call_rows_prompt(pdf_path, model, PROMPT, context_hint=context_hint)
+
+
+def review_gpt_with_pdf(
+    pdf_path: Path,
+    model: str,
+    issues: List[Dict[str, Any]],
+    context_hint: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Run a second focused extraction when detail and imponibile look inconsistent."""
+    issue_lines = []
+    for issue in issues:
+        issue_lines.append(
+            "- periodo {data_inizio} -> {data_fine}: somma_righe={sum_importo}, imponibile_mese={imponibile_mese}, scarto={delta}".format(
+                data_inizio=issue.get("data_inizio", ""),
+                data_fine=issue.get("data_fine", ""),
+                sum_importo=issue.get("sum_importo", ""),
+                imponibile_mese=issue.get("imponibile_mese", ""),
+                delta=issue.get("delta", ""),
+            )
+        )
+
+    review_prompt = (
+        f"{PROMPT}\n\n"
+        "CONTROLLO QUALITA AGGIUNTIVO\n"
+        "La prima estrazione ha prodotto un possibile disallineamento tra somma delle righe economiche e imponibile del periodo.\n"
+        "Ricontrolla con particolare attenzione SOLO i periodi qui sotto:\n"
+        f"{chr(10).join(issue_lines)}\n"
+        "Regola aggiuntiva:\n"
+        "- Questo controllo serve a farti correggere la prima lettura del singolo documento prima del post-processing.\n"
+        "- Se il caso NON contiene ricalcoli e il dettaglio del mese e' presente, verifica che la somma delle righe economiche corrisponda all'imponibile fiscale del mese.\n"
+        "- Se non torna, controlla se hai saltato una riga economica del mese (per esempio `Altre partite`) oppure se hai letto male l'imponibile del riepilogo fiscale.\n"
+        "- In un caso standard senza ricalcoli devi restituire l'imponibile fiscale corretto del documento e tutte le righe economiche del mese che lo compongono.\n"
+        "- Per ogni mese, tieni nel dettaglio SOLO le righe che appartengono davvero a quel mese.\n"
+        "- Se una riga e' un ricalcolo di altri mesi, NON farla contribuire al dettaglio del mese corrente: assegna il periodo corretto o mantienila come ricalcolo separato.\n"
+        "- Se NON ci sono righe economiche sufficienti per far tornare il periodo, usa `manca_dettaglio=\"si\"` e mantieni l`imponibile_mese` corretto del periodo.\n"
+        "- Se il documento contiene riepiloghi mensili o imponibili che includono altri periodi o ricalcoli, dai priorita alle righe esplicite del singolo mese.\n"
+        "- Se il caso e' standard senza ricalcoli e il documento ha un `Riepilogo IVA`, ricontrolla con attenzione l`imponibile della fornitura nel riepilogo fiscale.\n"
+        "- Se il riepilogo IVA riporta quote `Art. 15` o `Esclusa Art.15`, considera escluse dall'imponibile IVA solo quelle quote esplicitamente indicate: NON sottrarre tutta `Altre partite` se il PDF non lo dice.\n"
+        "- Se nel riepilogo economico del mese compare `Altre partite` e contribuisce al totale/imponibile, non saltarla: includila come macro-voce `altro`, salvo sia chiaramente solo more/sanzioni/solleciti esclusi.\n"
+        "- Se il dettaglio e' completo, fai tornare la somma delle righe economiche al valore corretto del periodo.\n"
+        "- Se il documento contiene anche altri mesi o ricalcoli di altri periodi, tienili separati con le loro date corrette.\n"
+        "- Valorizza correttamente i flag documentali `presenza_ricalcolo` e `ricalcolo_aggregato_multi_mese`.\n"
+        "- Restituisci di nuovo l'intero JSON finale con tutte le righe del documento.\n"
+    )
+    return _call_rows_prompt(pdf_path, model, review_prompt, context_hint=context_hint)

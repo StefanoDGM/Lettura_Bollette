@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Energon | Workspace Bollette</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <div class="page-bg page-bg-a"></div>
+  <div class="page-bg page-bg-b"></div>
+
+  <main class="page-shell">
+    <header class="brand-header">
+      <div class="brand-topline">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="{{ url_for('brand_logo') }}" alt="Energon">
+          <div class="brand-copy">
+            <span class="brand-overline">Workspace interno</span>
+            <strong class="brand-name">Automazione bollette e reportistica</strong>
+          </div>
+        </div>
+
+        <div class="brand-links" aria-label="Sezioni workspace">
+          <span>Pipeline PDF</span>
+          <span>Report mensili</span>
+          <span>Warning assistiti</span>
+        </div>
+      </div>
+
+      <div class="brand-ribbon">
+        <span>Upload documenti</span>
+        <span>Estrazione strutturata</span>
+        <span>Aggregazione di competenza</span>
+        <span>Controlli finali</span>
+      </div>
+    </header>
+
+    <section class="hero-shell">
+      <div class="hero-copy">
+        <p class="eyebrow">Energon Billing Intelligence</p>
+        <h1>Lettura automatica delle bollette</h1>
+        <p class="hero-text">
+          L'interfaccia esegue <code>run_full_pipeline.py</code>: analisi documento per documento,
+          consolidamento per mese di competenza e warning finali per i casi che meritano verifica manuale.
+        </p>
+
+        <div class="hero-pills">
+          <span>3 report in uscita</span>
+          <span>Ricalcoli aggregati gestiti</span>
+          <span>Warning leggibili per l'utente</span>
+        </div>
+      </div>
+
+      <aside class="hero-visual">
+        <div class="hero-visual-overlay"></div>
+        <div class="hero-shape hero-shape-a" aria-hidden="true"></div>
+        <div class="hero-shape hero-shape-b" aria-hidden="true"></div>
+        <div class="hero-shape hero-shape-c" aria-hidden="true"></div>
+        <div class="hero-card">
+          <span class="hero-card-kicker">Output finale</span>
+          <strong>Estratto CSV/XLSX + Aggregato mensile + Warning report</strong>
+          <p>Stesso linguaggio operativo del team, ma con priorita visiva sui punti da controllare.</p>
+        </div>
+      </aside>
+    </section>
+
+    {% if platform_status %}
+    <section class="platform-banner platform-banner-{{ platform_status.severity }}">
+      <strong>Stato OpenAI Platform</strong>
+      <div class="platform-banner-list">
+        {% for message in platform_status.messages %}
+        <p>{{ message }}</p>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="command-panel">
+      <div class="command-panel-header">
+        <div>
+          <p class="eyebrow">Centro operativo</p>
+          <h2>Caricamento e avvio pipeline</h2>
+        </div>
+        <p class="command-caption">Drag and drop attivo, selezione multipla PDF, esecuzione unica con branding Energon.</p>
+      </div>
+
+      <div class="command-grid">
+        <form class="upload-form" method="post" action="{{ url_for('run_pipeline_view') }}" enctype="multipart/form-data">
+          <label class="dropzone" id="dropzone" for="pdf_files">
+            <span class="dropzone-kicker">Trascina qui oppure fai clic</span>
+            <span class="dropzone-title">Rilascia i PDF dentro il riquadro per caricarli</span>
+            <span class="dropzone-subtitle">Formati supportati: .pdf, selezione multipla attiva</span>
+            <span class="dropzone-files" id="selected-files">Nessun file selezionato</span>
+          </label>
+          <input id="pdf_files" class="file-input" type="file" name="pdf_files" accept=".pdf" multiple required>
+          <div class="form-actions">
+            <button id="launch-button" class="launch-button" type="submit">Avvio</button>
+            <p class="form-hint">La pipeline salva estrazione CSV, estrazione XLSX e riepilogo aggregato XLSX.</p>
+          </div>
+        </form>
+
+        <div class="workflow-card">
+          <div class="workflow-step">
+            <span class="workflow-index">01</span>
+            <div>
+              <strong>Upload PDF</strong>
+              <p>Caricamento massivo di bollette da analizzare una alla volta.</p>
+            </div>
+          </div>
+          <div class="workflow-step">
+            <span class="workflow-index">02</span>
+            <div>
+              <strong>Estrazione GPT</strong>
+              <p>Dettaglio economico, consumi e metadati coerenti con il documento sorgente.</p>
+            </div>
+          </div>
+          <div class="workflow-step">
+            <span class="workflow-index">03</span>
+            <div>
+              <strong>Riepilogo mensile</strong>
+              <p>Consolidamento finale su importi, consumi e ricalcoli aggregati.</p>
+            </div>
+          </div>
+          <div class="workflow-step">
+            <span class="workflow-index">04</span>
+            <div>
+              <strong>Warning guidati</strong>
+              <p>Il sistema evidenzia dove l'automazione e affidabile e dove conviene una revisione manuale.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {% if result %}
+    <section class="result-panel">
+      <div class="result-header">
+        <div>
+          <p class="eyebrow">Ultima esecuzione</p>
+          <h2>Job {{ result.job_id }}</h2>
+        </div>
+        {% if result.error %}
+        <div class="status-badge error">Esecuzione con errore</div>
+        {% else %}
+        <div class="status-badge success">Esecuzione completata</div>
+        {% endif %}
+      </div>
+
+      {% if result.error %}
+      <div class="message-card error-card">{{ result.error }}</div>
+      {% endif %}
+
+      <div class="metrics-grid">
+        <article class="metric-card">
+          <span class="metric-label">PDF lavorati</span>
+          <strong class="metric-value">{{ result.metrics.pdf_count }}</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Righe estratte</span>
+          <strong class="metric-value">{{ result.metrics.extracted_rows }}</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Mesi aggregati</span>
+          <strong class="metric-value">{{ result.metrics.aggregated_months }}</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Mesi con warning</span>
+          <strong class="metric-value">{{ result.metrics.warning_months }}</strong>
+        </article>
+      </div>
+
+      {% if result.confidence %}
+      <div class="stack">
+        <h3>Confidenza per mese</h3>
+        <div class="confidence-grid">
+          {% for item in result.confidence %}
+          <article class="confidence-card confidence-{{ item.affidabilita_mese }}">
+            <div class="confidence-head">
+              <strong>{{ item.mese }} {{ item.anno }}</strong>
+              <span class="confidence-score">{{ item.confidenza_percent }}%</span>
+            </div>
+            <div class="confidence-bar" aria-hidden="true">
+              <span style="width: {{ item.confidenza_percent }}%"></span>
+            </div>
+            <div class="confidence-meta">
+              <span class="confidence-label">{{ item.affidabilita_mese|capitalize }}</span>
+              <span>{{ item.warning_count }} warning</span>
+            </div>
+            <div class="confidence-breakdown">
+              <div class="confidence-breakdown-item">
+                <span class="confidence-breakdown-title">Imponibile / importo</span>
+                <strong>{{ item.importo_confidenza_percent }}%</strong>
+                <p>{{ item.importo_confidenza_motivo }}</p>
+              </div>
+              <div class="confidence-breakdown-item">
+                <span class="confidence-breakdown-title">Consumo</span>
+                <strong>{{ item.consumo_confidenza_percent }}%</strong>
+                <p>{{ item.consumo_confidenza_motivo }}</p>
+              </div>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="result-grid">
+        <div class="stack">
+          <h3>Report disponibili</h3>
+          <div class="report-grid">
+            {% for report in result.downloads %}
+            <article class="report-card">
+              <span class="report-label">{{ report.label }}</span>
+              <strong>{{ report.filename }}</strong>
+              <span class="report-meta">{{ report.size_kb }} KB</span>
+              <a class="report-link" href="{{ report.url }}">Scarica il report</a>
+            </article>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="stack">
+          <h3>Documenti caricati</h3>
+          <div class="list-card">
+            {% if result.saved_files %}
+            <ul class="simple-list">
+              {% for filename in result.saved_files %}
+              <li>{{ filename }}</li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <p>Nessun file salvato.</p>
+            {% endif %}
+          </div>
+
+          {% if result.skipped_files %}
+          <h3>File ignorati</h3>
+          <div class="list-card muted">
+            <ul class="simple-list">
+              {% for filename in result.skipped_files %}
+              <li>{{ filename }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="stack">
+        <h3>Warning finali per l'utente</h3>
+        {% if result.warnings %}
+        <div class="warning-grid">
+          {% for warning in result.warnings %}
+          <article class="warning-card">
+            <div class="warning-head">
+              <strong>{{ warning.mese }} {{ warning.anno }}</strong>
+              <span>{{ warning.confidenza_percent }}% confidenza · {{ warning.warning_count }} warning</span>
+            </div>
+            <p>{{ warning.warning_mese }}</p>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="message-card">Nessun warning finale: il riepilogo non evidenzia criticita da revisione manuale.</div>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+  </main>
+
+  <script>
+    const input = document.getElementById("pdf_files");
+    const dropzone = document.getElementById("dropzone");
+    const selectedFiles = document.getElementById("selected-files");
+    const launchButton = document.getElementById("launch-button");
+
+    function updateSelectedFiles(files) {
+      const names = Array.from(files || []).map(file => file.name);
+      selectedFiles.textContent = names.length ? names.join(" | ") : "Nessun file selezionato";
+      dropzone?.classList.toggle("has-files", names.length > 0);
+    }
+
+    function collectPdfFiles(fileList) {
+      return Array.from(fileList || []).filter(file => file.name.toLowerCase().endsWith(".pdf"));
+    }
+
+    input?.addEventListener("change", () => {
+      updateSelectedFiles(input.files);
+    });
+
+    dropzone?.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("is-dragging");
+    });
+
+    dropzone?.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      dropzone.classList.add("is-dragging");
+    });
+
+    dropzone?.addEventListener("dragleave", (event) => {
+      if (event.target === dropzone) {
+        dropzone.classList.remove("is-dragging");
+      }
+    });
+
+    dropzone?.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("is-dragging");
+
+      const pdfFiles = collectPdfFiles(event.dataTransfer.files);
+      if (!pdfFiles.length) {
+        updateSelectedFiles([]);
+        selectedFiles.textContent = "Nessun PDF valido rilevato nel trascinamento";
+        return;
+      }
+
+      const dataTransfer = new DataTransfer();
+      pdfFiles.forEach((file) => dataTransfer.items.add(file));
+      input.files = dataTransfer.files;
+      updateSelectedFiles(input.files);
+    });
+
+    document.querySelector(".upload-form")?.addEventListener("submit", () => {
+      launchButton.disabled = true;
+      launchButton.textContent = "Esecuzione in corso";
+    });
+  </script>
+</body>
+</html>
