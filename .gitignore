@@ -58,3 +58,5 @@ fabriano/
 
 *.txt
 web_runs/
+debug_empty_rows/
+tmp_pdf_debug/

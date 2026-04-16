@@ -1,0 +1,14 @@
+services:
+  web:
+    image: ${DOCKER_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      ENERGON_WEB_PATH: ${ENERGON_WEB_PATH}
+    volumes:
+      - ./web_runs:/app/web_runs
+      - ./debug_empty_rows:/app/debug_empty_rows
+      - ./tmp_pdf_debug:/app/tmp_pdf_debug
