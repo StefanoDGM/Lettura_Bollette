@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -23,6 +24,110 @@ class TestAggregateBills(unittest.TestCase):
         output_path = resolve_output_path(None)
         self.assertEqual(output_path, OUT_XLSX)
         self.assertEqual(output_path.parent, INPUT_PATH.parent)
+
+    def test_empty_expanded_rows_do_not_raise_key_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            input_path.write_text("placeholder\nvalue\n", encoding="utf-8")
+
+            with patch("src.pipeline.aggregate_bills.read_table", return_value=pd.DataFrame([{"raw": "x"}])), patch(
+                "src.pipeline.aggregate_bills.prepare_dataframe",
+                return_value=pd.DataFrame([{"prepared": "x"}]),
+            ), patch("src.pipeline.aggregate_bills.build_consumo_basis", return_value=pd.DataFrame()), patch(
+                "src.pipeline.aggregate_bills.build_source_recalc_warning_report",
+                return_value=pd.DataFrame(),
+            ), patch(
+                "src.pipeline.aggregate_bills.expand_aggregated_recalculation_rows",
+                return_value=pd.DataFrame(columns=["_period_year", "_period_month"]),
+            ):
+                agg = aggregate_bolletta_data(input_path, output_path)
+                self.assertTrue(agg.empty)
+                self.assertTrue(output_path.exists())
+
+    def test_document_level_recalc_flags_do_not_hide_current_month_rows(self):
+        rows = [
+            {
+                "_source_file": "6_MAR_2024.pdf",
+                "nome_cliente": "SUPERCONDOMINIO EX OSPEDALE DI BAZZANO",
+                "pdr": "03081000018246",
+                "data_inizio": "01/03/2024",
+                "data_fine": "31/03/2024",
+                "consumo_totale": "8218",
+                "consumo_dettaglio_riga": "",
+                "tipo_componente": "variabile",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "dettaglio_voce": "Quota variabile Prezzo mercato",
+                "unita_misura": "€/Smc",
+                "quantita": "8218",
+                "prezzo_aliquota": "0,357933",
+                "importo": "2941,49",
+                "imponibile_mese": "7074,08",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+            },
+            {
+                "_source_file": "6_MAR_2024.pdf",
+                "nome_cliente": "SUPERCONDOMINIO EX OSPEDALE DI BAZZANO",
+                "pdr": "03081000018246",
+                "data_inizio": "01/03/2024",
+                "data_fine": "31/03/2024",
+                "consumo_totale": "8218",
+                "consumo_dettaglio_riga": "",
+                "tipo_componente": "trasporto",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "dettaglio_voce": "Quota trasporto",
+                "unita_misura": "€/Smc",
+                "quantita": "8218",
+                "prezzo_aliquota": "0,132672",
+                "importo": "1090,30",
+                "imponibile_mese": "7074,08",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+            },
+            {
+                "_source_file": "6_MAR_2024.pdf",
+                "nome_cliente": "SUPERCONDOMINIO EX OSPEDALE DI BAZZANO",
+                "pdr": "03081000018246",
+                "data_inizio": "01/10/2023",
+                "data_fine": "31/12/2023",
+                "consumo_totale": "",
+                "consumo_dettaglio_riga": "",
+                "tipo_componente": "ricalcolo_aggregato",
+                "riferimento_ricalcolo_da": "01/10/2023",
+                "riferimento_ricalcolo_a": "31/12/2023",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "dettaglio_voce": "CORRISPETTIVI DI VENDITA - Ricalcolo tariffario",
+                "unita_misura": "",
+                "quantita": "",
+                "prezzo_aliquota": "",
+                "importo": "-0,01",
+                "imponibile_mese": "",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "note": "Ricalcoli dal 01.10.2023 al 31.12.2023 - Ricalcolo tariffario",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            pd.DataFrame(rows).to_csv(input_path, index=False)
+            agg = aggregate_bolletta_data(input_path, output_path)
+
+        self.assertFalse(agg.empty)
+        marzo = agg.loc[(agg["anno"] == 2024) & (agg["mese_num"] == 3)].iloc[0]
+        self.assertAlmostEqual(float(marzo["consumo_mese"]), 8218.0)
+        self.assertEqual(marzo["mese"], "marzo")
 
     def test_standard_month_uses_document_imponibile_without_recalculation(self):
         rows = [

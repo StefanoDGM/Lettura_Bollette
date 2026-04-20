@@ -263,7 +263,18 @@ def is_row_multi_month_recalc(row: pd.Series) -> bool:
         return True
 
     raw_multi = parse_bool_si_no(row.get("ricalcolo_aggregato_multi_mese"))
-    return bool(raw_multi)
+    if not raw_multi:
+        return False
+
+    component = normalize_component(row.get("tipo_componente"))
+    if component == "ricalcolo_aggregato":
+        return True
+
+    text = normalized_text(row.get("dettaglio_voce"), row.get("note"))
+    if "ricalcolo" in text and (pd.notna(row.get("_rif_da_dt")) or pd.notna(row.get("_rif_a_dt"))):
+        return True
+
+    return False
 
 
 def infer_tipo_componente(row: pd.Series) -> str:
@@ -1123,6 +1134,15 @@ def build_consumo_basis(df: pd.DataFrame) -> dict[tuple[int, int], float]:
         return basis
 
     for (year, month), group in normal_rows.groupby(["_period_year", "_period_month"], sort=True):
+        support_rows = group.loc[group["_categoria_parser"].eq("tabella_supporto_consumi_mensili")]
+        if not support_rows.empty:
+            support_quantity = infer_month_quantity_from_rows(support_rows)
+            if support_quantity is not None and support_quantity > 0:
+                # Support-table rows may carry a document-level total that belongs to
+                # a wider statement window; for proportional allocations we want the
+                # month-specific quantity shown on the row itself.
+                basis[(int(year), int(month))] = float(support_quantity)
+                continue
         consumo_info = compute_consumo_mese(group)
         consumo_mese = consumo_info["consumo_mese"]
         if consumo_mese is not None and consumo_mese > 0:
@@ -1560,7 +1580,9 @@ def aggregate_bolletta_data(input_path, output_path) -> pd.DataFrame:
             }
         )
 
-    aggregated = pd.DataFrame(monthly_rows).sort_values(["anno", "mese_num"]).reset_index(drop=True)
+    aggregated = pd.DataFrame(monthly_rows)
+    if not aggregated.empty:
+        aggregated = aggregated.sort_values(["anno", "mese_num"]).reset_index(drop=True)
     if not aggregated.empty:
         confidence_df = aggregated.apply(lambda row: pd.Series(compute_confidence_profile(row)), axis=1)
         for column in (
