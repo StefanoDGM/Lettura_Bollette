@@ -15,10 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNS_DIR = ROOT / "web_runs"
 LOGO_PATH = ROOT / "Logo-Energon-orizz-RGB.jpg"
 ALLOWED_SUFFIXES = {".pdf"}
-APP_PATH = os.environ.get("ENERGON_WEB_PATH", "/Lettura_Bollette_Energon").strip() or "/Lettura_Bollette_Energon"
-if not APP_PATH.startswith("/"):
-    APP_PATH = f"/{APP_PATH}"
-APP_PATH = APP_PATH.rstrip("/") or "/Lettura_Bollette_Energon"
+DEFAULT_APP_PATH = "/Lettura_Bollette_Energon"
 REPORT_METADATA = {
     "csv": ("Report Estrazione CSV", "estrazione_tutti_mesi.csv"),
     "xlsx": ("Report Estrazione Excel", "estrazione_tutti_mesi.xlsx"),
@@ -26,28 +23,52 @@ REPORT_METADATA = {
 }
 
 
+def normalize_app_path(raw_path: str | None) -> str:
+    candidate = (raw_path or "").strip() or DEFAULT_APP_PATH
+    if candidate == "/":
+        return "/"
+    if not candidate.startswith("/"):
+        candidate = f"/{candidate}"
+    candidate = candidate.rstrip("/")
+    return candidate or DEFAULT_APP_PATH
+
+
+def join_app_path(app_path: str, suffix: str) -> str:
+    suffix = suffix if suffix.startswith("/") else f"/{suffix}"
+    if app_path == "/":
+        return suffix
+    return f"{app_path}{suffix}"
+
+
 def create_app() -> Flask:
-    app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["APPLICATION_ROOT"] = APP_PATH
+    app_path = normalize_app_path(os.environ.get("ENERGON_WEB_PATH"))
+    app = Flask(
+        __name__,
+        template_folder="templates",
+        static_folder="static",
+        static_url_path=join_app_path(app_path, "/static"),
+    )
+    app.config["ENERGON_WEB_PATH"] = app_path
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    @app.get("/")
-    def root_redirect():
-        return redirect(url_for("index"))
-
-    @app.get(APP_PATH)
+    @app.get(app_path)
     def index():
         job_id = request.args.get("job_id", "").strip()
         result = load_result(job_id) if job_id else None
         return render_template("index.html", result=result, platform_status=get_platform_status(result))
 
-    @app.get("/brand/logo")
+    if app_path != "/":
+        @app.get("/")
+        def root_redirect():
+            return redirect(url_for("index"))
+
+    @app.get(join_app_path(app_path, "/brand/logo"))
     def brand_logo():
         if not LOGO_PATH.exists():
             abort(404)
         return send_file(LOGO_PATH)
 
-    @app.post(f"{APP_PATH}/run")
+    @app.post(join_app_path(app_path, "/run"))
     def run_pipeline_view():
         uploaded_files = request.files.getlist("pdf_files")
         job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
@@ -84,14 +105,14 @@ def create_app() -> Flask:
                 "metrics": {"pdf_count": 0, "extracted_rows": 0, "aggregated_months": 0, "warning_months": 0},
             }
             persist_result(job_dir, result)
-            return render_template("index.html", result=result, platform_status=get_platform_status(result)), 400
+            return redirect(url_for("index", job_id=job_id), code=303)
 
         pipeline_result = full_pipeline(input_dir, output_dir=output_dir)
         result = build_result_payload(job_id, saved_files, skipped_files, pipeline_result)
         persist_result(job_dir, result)
-        return render_template("index.html", result=result, platform_status=get_platform_status(result))
+        return redirect(url_for("index", job_id=job_id), code=303)
 
-    @app.get(f"{APP_PATH}/download/<job_id>/<report_key>")
+    @app.get(join_app_path(app_path, "/download/<job_id>/<report_key>"))
     def download_report(job_id: str, report_key: str):
         result = load_result(job_id)
         if result is None:
