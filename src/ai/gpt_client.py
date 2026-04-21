@@ -84,10 +84,12 @@ CONSUMI
 - Nelle bollette elettriche usa lo stesso criterio: privilegia il valore mensile del mese, anche se il documento contiene fasce F1/F2/F3, energia, perdite, potenza o tabelle riassuntive.
 - Le fasce F1/F2/F3 o le componenti di potenza possono aiutare a capire il consumo del mese, ma non implicano da sole che l'importo del mese sia ricostruibile con certezza.
 
-FLAG DOCUMENTALI OBBLIGATORI
-- `presenza_ricalcolo` = "si" se il documento contiene storni, conguagli, ricalcoli ex art. 6.2, importi gia contabilizzati in bollette precedenti, acconti fatture precedenti o righe negative che rettificano periodi gia fatturati.
-- `ricalcolo_aggregato_multi_mese` = "si" se il ricalcolo/storno si riferisce a piu mesi insieme o a un intervallo multi-mese non allocabile direttamente a un solo mese.
-- Questi flag sono documentali: ripetili su tutte le righe dello stesso documento/periodo.
+FLAG DI RIGA OBBLIGATORI
+- `presenza_ricalcolo` = "si" SOLO sulla riga che e' essa stessa uno storno/conguaglio/ricalcolo/acconto precedente o una rettifica riferita a un altro periodo.
+- Se nello stesso documento ci sono 200 righe normali del mese corrente e 1 riga riferita a un mese precedente, metti `presenza_ricalcolo="si"` SOLO sulla riga del mese precedente; tutte le righe normali del mese corrente restano `no`.
+- `ricalcolo_aggregato_multi_mese` = "si" SOLO sulla singola riga che rappresenta davvero un ricalcolo/storno riferito a piu mesi insieme o a un intervallo multi-mese non allocabile direttamente a un solo mese.
+- Se il riferimento del ricalcolo e' un solo mese (es. `01/05/2024` -> `31/05/2024`), allora `presenza_ricalcolo="si"` ma `ricalcolo_aggregato_multi_mese="no"`.
+- NON trattare questi flag come documentali e NON ripeterli su tutte le righe dello stesso documento.
 
 RICALCOLI AGGREGATI
 - Se una riga appartiene a un blocco come "Ricalcoli dal ... al ..." o a un ricalcolo aggregato riferito a piu mesi precedenti, valorizza i campi dedicati.
@@ -407,7 +409,7 @@ def review_gpt_with_pdf(
         "- Se nel riepilogo economico del mese compare `Altre partite` e contribuisce al totale/imponibile, non saltarla: includila come macro-voce `altro`, salvo sia chiaramente solo more/sanzioni/solleciti esclusi.\n"
         "- Se il dettaglio e' completo, fai tornare la somma delle righe economiche al valore corretto del periodo.\n"
         "- Se il documento contiene anche altri mesi o ricalcoli di altri periodi, tienili separati con le loro date corrette.\n"
-        "- Valorizza correttamente i flag documentali `presenza_ricalcolo` e `ricalcolo_aggregato_multi_mese`.\n"
+        "- Valorizza correttamente i flag DI RIGA `presenza_ricalcolo` e `ricalcolo_aggregato_multi_mese`: metti `si` solo sulla riga rettificata; se il periodo copre un solo mese, `ricalcolo_aggregato_multi_mese` deve restare `no`.\n"
         "- Restituisci di nuovo l'intero JSON finale con tutte le righe del documento.\n"
     )
     return _call_rows_prompt(pdf_path, model, review_prompt, context_hint=context_hint)

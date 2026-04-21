@@ -319,7 +319,7 @@ class TestAggregateBills(unittest.TestCase):
         )
         self.assertIn("rettificato da una bolletta successiva", gennaio["confidenza_motivo"].lower())
 
-    def test_month_uses_detail_sum_when_document_contains_recalc_for_other_month(self):
+    def test_month_without_row_level_recalc_can_still_use_document_imponibile(self):
         rows = [
             {
                 "data_inizio": "01/01/2024",
@@ -431,12 +431,10 @@ class TestAggregateBills(unittest.TestCase):
 
         gennaio = agg.loc[(agg["anno"] == 2024) & (agg["mese_num"] == 1)].iloc[0]
         novembre = agg.loc[(agg["anno"] == 2023) & (agg["mese_num"] == 11)].iloc[0]
-        self.assertAlmostEqual(float(gennaio["totale_importi"]), 6253.40)
-        self.assertEqual(gennaio["importo_logica_usata"], "dettaglio_mese_con_ricalcolo")
-        self.assertIn(
-            "Imponibile preso da somma del dettaglio del mese, in quanto nella bolletta erano presenti anche altri mesi come ricalcolo",
-            gennaio["warning_mese"],
-        )
+        self.assertAlmostEqual(float(gennaio["totale_importi"]), 6243.50)
+        self.assertEqual(gennaio["importo_logica_usata"], "imponibile_documento")
+        self.assertEqual(gennaio["ricalcolo_presente"], "no")
+        self.assertEqual(gennaio["totale_documento_non_confrontabile_direttamente_con_mese_corrente"], "si")
         self.assertAlmostEqual(float(novembre["totale_importi"]), 14.29)
 
     def test_single_month_recalculation_with_block_flag_is_not_treated_as_aggregated_event(self):
@@ -592,6 +590,64 @@ class TestAggregateBills(unittest.TestCase):
         self.assertNotIn("ignorato il totale aggregato", april_warning["warning_mese"].lower())
         self.assertIn("consumo del mese corretto da ricalcolo", april_warning["warning_mese"].lower())
         self.assertIn("imponibile della bolletta base", agg.loc[0, "warning_mese"].lower())
+
+    def test_single_month_recalculation_misflagged_as_multi_month_is_normalized(self):
+        rows = [
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "importo": "5926.18",
+                "imponibile_mese": "5926.18",
+                "consumo_totale": "9720",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "no",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "no",
+                "categoria_parser": "riga_analitica_mese",
+                "_source_file": "Bolletta_GAS_05-2024.pdf",
+                "dettaglio_voce": "Spesa maggio",
+            },
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "importo": "152.67",
+                "imponibile_mese": "",
+                "consumo_totale": "9720",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
+                "categoria_parser": "evento_ricalcolo",
+                "_source_file": "Bolletta_GAS_07-2024.pdf",
+                "dettaglio_voce": "Ricalcoli per aggiornamento componenti tariffarie",
+                "tipo_componente": "ricalcolo_aggregato",
+                "unita_misura": "Smc",
+                "quantita": "9720",
+                "blocco_ricalcolo_aggregato": "si",
+                "riferimento_ricalcolo_da": "01/05/2024",
+                "riferimento_ricalcolo_a": "31/05/2024",
+                "manca_dettaglio_ricalcolo": "si",
+                "ricalcolo_spalmabile": "no",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            pd.DataFrame(rows).to_csv(input_path, index=False)
+            agg = aggregate_bolletta_data(input_path, output_path)
+
+        self.assertEqual(len(agg), 1)
+        self.assertAlmostEqual(float(agg.loc[0, "totale_importi"]), 6078.85)
+        self.assertEqual(agg.loc[0, "ricalcolo_presente"], "si")
+        self.assertEqual(agg.loc[0, "ricalcolo_aggregato_multi_mese"], "no")
+        self.assertFalse(bool(agg.loc[0, "ricalcolo_aggregato_presente"]))
+        self.assertEqual(float(agg.loc[0, "importo_ricalcoli_aggregati"]), 0.0)
 
     def test_aggregated_multi_month_with_reconstructible_detail_does_not_allocate_total(self):
         rows = [

@@ -86,6 +86,12 @@ RICALCOLO_KEYWORDS = (
 )
 STORNO_KEYWORDS = ("storno", "rettifica", "accredito")
 ACCONTO_PRECEDENTE_KEYWORDS = ("acconto", "acconti")
+RECALC_EVENT_CATEGORIES = {
+    "evento_ricalcolo",
+    "evento_storno",
+    "evento_acconto_precedente",
+    "totale_aggregato_multi_mese",
+}
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -253,28 +259,17 @@ def normalize_component(value) -> str:
     return str(value).strip().lower()
 
 
+def has_true_multi_month_scope(row: pd.Series) -> bool:
+    return len(month_range(row.get("_rif_da_dt"), row.get("_rif_a_dt"))) > 1
+
+
+def is_recalc_event_category(category: str) -> bool:
+    return str(category or "").strip().lower() in RECALC_EVENT_CATEGORIES
+
+
 def is_row_multi_month_recalc(row: pd.Series) -> bool:
     category = str(row.get("_categoria_parser", "") or "").strip().lower()
-    if category == "totale_aggregato_multi_mese":
-        return True
-
-    months = month_range(row.get("_rif_da_dt"), row.get("_rif_a_dt"))
-    if len(months) > 1:
-        return True
-
-    raw_multi = parse_bool_si_no(row.get("ricalcolo_aggregato_multi_mese"))
-    if not raw_multi:
-        return False
-
-    component = normalize_component(row.get("tipo_componente"))
-    if component == "ricalcolo_aggregato":
-        return True
-
-    text = normalized_text(row.get("dettaglio_voce"), row.get("note"))
-    if "ricalcolo" in text and (pd.notna(row.get("_rif_da_dt")) or pd.notna(row.get("_rif_a_dt"))):
-        return True
-
-    return False
+    return category == "totale_aggregato_multi_mese" or has_true_multi_month_scope(row)
 
 
 def infer_tipo_componente(row: pd.Series) -> str:
@@ -328,19 +323,21 @@ def unique_numbers_in_order(series: pd.Series) -> list[float]:
 
 def infer_categoria_parser(row: pd.Series) -> str:
     raw_category = str(row.get("categoria_parser", "") or "").strip().lower()
-    if raw_category in VALID_CATEGORIE_PARSER:
-        return raw_category
-
     text = normalized_text(row.get("dettaglio_voce"), row.get("note"))
     rif_da = row.get("_rif_da_dt")
     rif_a = row.get("_rif_a_dt")
 
+    if raw_category == "tabella_supporto_consumi_mensili":
+        return raw_category
+
     if "consumi relativi agli ultimi mesi" in text and pd.isna(row.get("_importo_num")):
         return "tabella_supporto_consumi_mensili"
 
-    months = month_range(rif_da, rif_a)
-    if len(months) > 1:
+    if has_true_multi_month_scope(row):
         return "totale_aggregato_multi_mese"
+
+    if raw_category in VALID_CATEGORIE_PARSER and raw_category != "totale_aggregato_multi_mese":
+        return raw_category
 
     if any(keyword in text for keyword in ACCONTO_PRECEDENTE_KEYWORDS) and (
         "precedent" in text or "gia contabilizzati" in text or "già contabilizzati" in text
@@ -370,8 +367,8 @@ def finalize_document_flags(prepared: pd.DataFrame) -> pd.DataFrame:
     prepared["categoria_parser"] = prepared.apply(infer_categoria_parser, axis=1)
     prepared["_categoria_parser"] = prepared["categoria_parser"].fillna("").astype(str).str.strip().str.lower()
 
-    prepared["_presenza_ricalcolo_bool"] = prepared["presenza_ricalcolo"].apply(parse_bool_si_no)
-    prepared["_ricalcolo_multi_bool"] = prepared["ricalcolo_aggregato_multi_mese"].apply(parse_bool_si_no)
+    prepared["_presenza_ricalcolo_bool"] = prepared["_categoria_parser"].apply(is_recalc_event_category)
+    prepared["_ricalcolo_multi_bool"] = prepared.apply(is_row_multi_month_recalc, axis=1)
     prepared["_dettaglio_ricostruzione_bool"] = prepared["dettaglio_ricostruzione_presente"].apply(parse_bool_si_no)
     prepared["_totale_non_confrontabile_bool"] = prepared[
         "totale_documento_puo_non_coincidere_con_mese_corrente"
@@ -379,18 +376,6 @@ def finalize_document_flags(prepared: pd.DataFrame) -> pd.DataFrame:
 
     for source_file, index in prepared.groupby("_source_file", sort=False).groups.items():
         source_group = prepared.loc[index]
-        inferred_presence = any(
-            category in {
-                "evento_ricalcolo",
-                "evento_storno",
-                "evento_acconto_precedente",
-                "totale_aggregato_multi_mese",
-            }
-            for category in source_group["_categoria_parser"].tolist()
-        )
-        inferred_aggregated = any(
-            category == "totale_aggregato_multi_mese" for category in source_group["_categoria_parser"].tolist()
-        )
         inferred_reconstructible = any(
             category in {"riga_analitica_mese", "tabella_supporto_consumi_mensili"}
             and str(row_manca).strip().lower() == "no"
@@ -400,24 +385,33 @@ def finalize_document_flags(prepared: pd.DataFrame) -> pd.DataFrame:
             )
         )
 
-        presence_flags = [value for value in source_group["_presenza_ricalcolo_bool"].tolist() if value is not None]
-        aggregated_flags = [value for value in source_group["_ricalcolo_multi_bool"].tolist() if value is not None]
         reconstruct_flags = [value for value in source_group["_dettaglio_ricostruzione_bool"].tolist() if value is not None]
         non_compare_flags = [value for value in source_group["_totale_non_confrontabile_bool"].tolist() if value is not None]
 
-        final_presence = any(presence_flags) if presence_flags else inferred_presence
-        final_aggregated = any(aggregated_flags) if aggregated_flags else inferred_aggregated
         final_reconstructible = any(reconstruct_flags) if reconstruct_flags else inferred_reconstructible
-        final_non_comparable = any(non_compare_flags) if non_compare_flags else final_presence
+        source_has_cross_period_context = (
+            len(
+                {
+                    (str(row.get("data_inizio", "")).strip(), str(row.get("data_fine", "")).strip())
+                    for _, row in source_group.iterrows()
+                    if str(row.get("data_inizio", "")).strip() or str(row.get("data_fine", "")).strip()
+                }
+            )
+            > 1
+            or bool(source_group["_presenza_ricalcolo_bool"].any())
+            or bool(source_group["riferimento_ricalcolo_da"].fillna("").astype(str).str.strip().any())
+            or bool(source_group["riferimento_ricalcolo_a"].fillna("").astype(str).str.strip().any())
+        )
+        final_non_comparable = any(non_compare_flags) if non_compare_flags else source_has_cross_period_context
 
-        prepared.loc[index, "presenza_ricalcolo"] = bool_to_si_no(final_presence)
-        prepared.loc[index, "ricalcolo_aggregato_multi_mese"] = bool_to_si_no(final_aggregated)
+        prepared.loc[index, "presenza_ricalcolo"] = prepared.loc[index, "_presenza_ricalcolo_bool"].map(bool_to_si_no)
+        prepared.loc[index, "ricalcolo_aggregato_multi_mese"] = prepared.loc[index, "_ricalcolo_multi_bool"].map(
+            bool_to_si_no
+        )
         prepared.loc[index, "dettaglio_ricostruzione_presente"] = bool_to_si_no(final_reconstructible)
         prepared.loc[index, "totale_documento_puo_non_coincidere_con_mese_corrente"] = bool_to_si_no(
             final_non_comparable
         )
-        prepared.loc[index, "_presenza_ricalcolo_bool"] = final_presence
-        prepared.loc[index, "_ricalcolo_multi_bool"] = final_aggregated
         prepared.loc[index, "_dettaglio_ricostruzione_bool"] = final_reconstructible
         prepared.loc[index, "_totale_non_confrontabile_bool"] = final_non_comparable
 

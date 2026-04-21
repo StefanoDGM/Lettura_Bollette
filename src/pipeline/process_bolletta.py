@@ -525,6 +525,12 @@ def spans_multiple_months(data_inizio: str, data_fine: str) -> bool:
     return (start_dt.year, start_dt.month) != (end_dt.year, end_dt.month)
 
 
+def row_has_true_multi_month_scope(row: dict) -> bool:
+    rif_da = str(row.get("riferimento_ricalcolo_da", "")).strip()
+    rif_a = str(row.get("riferimento_ricalcolo_a", "")).strip()
+    return bool(rif_da and rif_a and spans_multiple_months(rif_da, rif_a))
+
+
 def group_rows_by_period(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     grouped: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
@@ -545,20 +551,23 @@ def is_explicit_recalculation_row(row: dict) -> bool:
 
 def derive_categoria_parser(row: dict) -> str:
     raw_category = str(row.get("categoria_parser", "")).strip().lower()
-    if raw_category in VALID_CATEGORIE_PARSER:
-        return raw_category
-
     text = normalized_row_text(row)
     data_inizio = str(row.get("data_inizio", "")).strip()
     data_fine = str(row.get("data_fine", "")).strip()
     rif_da = str(row.get("riferimento_ricalcolo_da", "")).strip()
     rif_a = str(row.get("riferimento_ricalcolo_a", "")).strip()
 
+    if raw_category == "tabella_supporto_consumi_mensili":
+        return raw_category
+
     if any(keyword in text for keyword in SUPPORTO_CONSUMI_KEYWORDS) and not str(row.get("importo", "")).strip():
         return "tabella_supporto_consumi_mensili"
 
-    if rif_da and rif_a and spans_multiple_months(rif_da, rif_a):
+    if row_has_true_multi_month_scope(row):
         return "totale_aggregato_multi_mese"
+
+    if raw_category in VALID_CATEGORIE_PARSER and raw_category != "totale_aggregato_multi_mese":
+        return raw_category
 
     if any(keyword in text for keyword in ACCONTO_PRECEDENTE_KEYWORDS) and any(
         keyword in text for keyword in ("precedenti", "precedente")
@@ -582,7 +591,12 @@ def enrich_extracted_rows(rows: list[dict]) -> list[dict]:
         return rows
 
     categories = [derive_categoria_parser(row) for row in rows]
-    has_recalculation = any(
+    has_reconstructible_detail = any(
+        category in {"riga_analitica_mese", "tabella_supporto_consumi_mensili"}
+        and str(row.get("manca_dettaglio", "")).strip().lower() == "no"
+        for category, row in zip(categories, rows)
+    )
+    has_cross_period_context = len(collect_document_periods(rows)) > 1 or any(
         category in {
             "evento_ricalcolo",
             "evento_storno",
@@ -591,31 +605,27 @@ def enrich_extracted_rows(rows: list[dict]) -> list[dict]:
         }
         for category in categories
     )
-    has_multi_month_aggregate = any(category == "totale_aggregato_multi_mese" for category in categories)
-    has_reconstructible_detail = any(
-        category in {"riga_analitica_mese", "tabella_supporto_consumi_mensili"}
-        and str(row.get("manca_dettaglio", "")).strip().lower() == "no"
-        for category, row in zip(categories, rows)
-    )
 
     enriched_rows: list[dict] = []
     for category, row in zip(categories, rows):
         enriched = dict(row)
         enriched["categoria_parser"] = category
-        enriched["presenza_ricalcolo"] = (
-            normalize_si_no_flag(enriched.get("presenza_ricalcolo"), "si" if has_recalculation else "no")
-        )
-        enriched["ricalcolo_aggregato_multi_mese"] = normalize_si_no_flag(
-            enriched.get("ricalcolo_aggregato_multi_mese"),
-            "si" if has_multi_month_aggregate else "no",
-        )
+        row_has_recalculation = category in {
+            "evento_ricalcolo",
+            "evento_storno",
+            "evento_acconto_precedente",
+            "totale_aggregato_multi_mese",
+        }
+        row_has_multi_month_aggregate = category == "totale_aggregato_multi_mese"
+        enriched["presenza_ricalcolo"] = "si" if row_has_recalculation else "no"
+        enriched["ricalcolo_aggregato_multi_mese"] = "si" if row_has_multi_month_aggregate else "no"
         enriched["dettaglio_ricostruzione_presente"] = normalize_si_no_flag(
             enriched.get("dettaglio_ricostruzione_presente"),
             "si" if has_reconstructible_detail else "no",
         )
         enriched["totale_documento_puo_non_coincidere_con_mese_corrente"] = normalize_si_no_flag(
             enriched.get("totale_documento_puo_non_coincidere_con_mese_corrente"),
-            "si" if enriched["presenza_ricalcolo"] == "si" else "no",
+            "si" if has_cross_period_context else "no",
         )
         enriched_rows.append(enriched)
 

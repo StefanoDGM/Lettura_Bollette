@@ -4,6 +4,7 @@ from pathlib import Path
 from src.extractor.pdf_extractor import MAX_PAGES
 from src.pipeline.process_bolletta import (
     VAT_REPARSE_NOTE,
+    enrich_extracted_rows,
     extract_vat_imponibile_from_text,
     find_detail_imponibile_issues,
     find_pdf_files,
@@ -243,6 +244,92 @@ class TestPipeline(unittest.TestCase):
         adjusted = normalize_detail_flags_from_rows(rows)
 
         self.assertTrue(all(row["manca_dettaglio"] == "no" for row in adjusted))
+
+    def test_enrich_extracted_rows_marks_only_recalculated_row(self):
+        rows = [
+            {
+                "_source_file": "bolletta_marzo.pdf",
+                "data_inizio": "01/03/2024",
+                "data_fine": "31/03/2024",
+                "dettaglio_voce": "Spesa per la materia gas naturale",
+                "importo": "100.00",
+                "manca_dettaglio": "no",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "categoria_parser": "",
+            },
+            {
+                "_source_file": "bolletta_marzo.pdf",
+                "data_inizio": "01/03/2024",
+                "data_fine": "31/03/2024",
+                "dettaglio_voce": "Spesa per il trasporto e la gestione contatore",
+                "importo": "20.00",
+                "manca_dettaglio": "no",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "categoria_parser": "",
+            },
+            {
+                "_source_file": "bolletta_marzo.pdf",
+                "data_inizio": "01/02/2024",
+                "data_fine": "29/02/2024",
+                "dettaglio_voce": "Ricalcoli per aggiornamento componenti tariffarie",
+                "importo": "5.50",
+                "manca_dettaglio": "no",
+                "riferimento_ricalcolo_da": "01/02/2024",
+                "riferimento_ricalcolo_a": "29/02/2024",
+                "categoria_parser": "",
+            },
+        ]
+
+        enriched = enrich_extracted_rows(rows)
+
+        self.assertEqual(enriched[0]["presenza_ricalcolo"], "no")
+        self.assertEqual(enriched[1]["presenza_ricalcolo"], "no")
+        self.assertEqual(enriched[2]["presenza_ricalcolo"], "si")
+        self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[1]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[2]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertTrue(
+            all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
+        )
+
+    def test_enrich_extracted_rows_preserves_true_multi_month_aggregate(self):
+        rows = [
+            {
+                "_source_file": "bolletta_dicembre.pdf",
+                "data_inizio": "01/12/2024",
+                "data_fine": "31/12/2024",
+                "dettaglio_voce": "Spesa per la materia gas naturale",
+                "importo": "1000.00",
+                "manca_dettaglio": "no",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "categoria_parser": "",
+            },
+            {
+                "_source_file": "bolletta_dicembre.pdf",
+                "data_inizio": "01/09/2024",
+                "data_fine": "30/11/2024",
+                "dettaglio_voce": "Ricalcoli per aggiornamento componenti tariffarie",
+                "importo": "90.00",
+                "manca_dettaglio": "no",
+                "riferimento_ricalcolo_da": "01/09/2024",
+                "riferimento_ricalcolo_a": "30/11/2024",
+                "categoria_parser": "",
+            },
+        ]
+
+        enriched = enrich_extracted_rows(rows)
+
+        self.assertEqual(enriched[0]["presenza_ricalcolo"], "no")
+        self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[1]["presenza_ricalcolo"], "si")
+        self.assertEqual(enriched[1]["ricalcolo_aggregato_multi_mese"], "si")
+        self.assertEqual(enriched[1]["categoria_parser"], "totale_aggregato_multi_mese")
+        self.assertTrue(
+            all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
+        )
 
     def test_reconcile_standard_month_with_vat_summary_replaces_misread_imponibile(self):
         rows = [
