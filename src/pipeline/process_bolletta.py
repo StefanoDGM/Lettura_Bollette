@@ -61,6 +61,7 @@ EXPORT_PRIORITY_COLUMNS = (
     "riferimento_ricalcolo_a",
     "presenza_ricalcolo",
     "ricalcolo_aggregato_multi_mese",
+    "tipo_ricalcolo",
     "dettaglio_voce",
     "unita_misura",
     "quantita",
@@ -85,7 +86,6 @@ FLAG_TRUE_VALUES = {"si", "sì", "yes", "true", "1"}
 RICALCOLO_KEYWORDS = (
     "ricalcolo",
     "ricalcoli ex art",
-    "conguaglio",
     "importi gia contabilizzati",
     "importi già contabilizzati",
     "gia contabilizzati in bollette precedenti",
@@ -95,6 +95,15 @@ RICALCOLO_KEYWORDS = (
 )
 STORNO_KEYWORDS = ("storno", "rettifica", "accredito")
 ACCONTO_PRECEDENTE_KEYWORDS = ("acconto", "acconti")
+CONSUMO_RICALCOLO_KEYWORDS = (
+    "ricalcolo consum",
+    "storno consum",
+    "consumo rideterminato",
+    "rettifica consum",
+    "ricalcolo smc",
+    "ricalcolo mc",
+    "ricalcolo kwh",
+)
 SUPPORTO_CONSUMI_KEYWORDS = ("consumi relativi agli ultimi mesi", "consumi degli ultimi mesi")
 VALID_CATEGORIE_PARSER = {
     "riga_analitica_mese",
@@ -104,6 +113,7 @@ VALID_CATEGORIE_PARSER = {
     "totale_aggregato_multi_mese",
     "tabella_supporto_consumi_mensili",
 }
+VALID_TIPI_RICALCOLO = {"importo", "consumo", "importo_e_consumo"}
 VAT_REPARSE_NOTE = "imponibile_pdf_initial_read_mismatch_reparsed"
 ART15_NOTE = "art15_excluded_in_iva_summary"
 SUMMARY_SECTION_MARKERS = (
@@ -511,6 +521,35 @@ def normalized_row_text(row: dict) -> str:
     return " | ".join(part for part in parts if part)
 
 
+def normalize_tipo_ricalcolo(value, default: str = "") -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    if text in VALID_TIPI_RICALCOLO:
+        return text
+    return default
+
+
+def row_has_consumo_recalc_signal(row: dict) -> bool:
+    if parse_decimal_for_audit(row.get("consumo_dettaglio_riga")) is not None:
+        return True
+
+    text = normalized_row_text(row)
+    if any(keyword in text for keyword in CONSUMO_RICALCOLO_KEYWORDS):
+        return True
+
+    quantity = parse_decimal_for_audit(row.get("quantita"))
+    unit = str(row.get("unita_misura", "")).strip().lower()
+    dettaglio_consumo = normalize_si_no_flag(row.get("manca_dettaglio_consumo"))
+    if quantity is not None and ("smc" in unit or "kwh" in unit or unit == "mc"):
+        if quantity < 0:
+            return True
+        if dettaglio_consumo == "no":
+            return True
+
+    return False
+
+
 def parse_date_text(value: str) -> pd.Timestamp | None:
     if not value:
         return pd.NaT
@@ -542,11 +581,37 @@ def group_rows_by_period(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
 def is_explicit_recalculation_row(row: dict) -> bool:
     if str(row.get("riferimento_ricalcolo_da", "")).strip() or str(row.get("riferimento_ricalcolo_a", "")).strip():
         return True
+    if normalize_tipo_ricalcolo(row.get("tipo_ricalcolo")):
+        return True
     if normalize_si_no_flag(row.get("presenza_ricalcolo")) == "si":
         text = normalized_row_text(row)
         if any(keyword in text for keyword in RICALCOLO_KEYWORDS + STORNO_KEYWORDS + ACCONTO_PRECEDENTE_KEYWORDS):
             return True
     return False
+
+
+def infer_tipo_ricalcolo(row: dict, category: str = "") -> str:
+    recalc_category = str(category or row.get("categoria_parser", "")).strip().lower()
+    if recalc_category not in {
+        "evento_ricalcolo",
+        "evento_storno",
+        "evento_acconto_precedente",
+        "totale_aggregato_multi_mese",
+    }:
+        return ""
+
+    raw_value = normalize_tipo_ricalcolo(row.get("tipo_ricalcolo"))
+    if raw_value:
+        return raw_value
+
+    has_consumo_signal = row_has_consumo_recalc_signal(row)
+    has_import_signal = parse_decimal_for_audit(row.get("importo")) is not None
+
+    if has_consumo_signal and has_import_signal:
+        return "importo_e_consumo"
+    if has_consumo_signal:
+        return "consumo"
+    return "importo"
 
 
 def derive_categoria_parser(row: dict) -> str:
@@ -619,6 +684,7 @@ def enrich_extracted_rows(rows: list[dict]) -> list[dict]:
         row_has_multi_month_aggregate = category == "totale_aggregato_multi_mese"
         enriched["presenza_ricalcolo"] = "si" if row_has_recalculation else "no"
         enriched["ricalcolo_aggregato_multi_mese"] = "si" if row_has_multi_month_aggregate else "no"
+        enriched["tipo_ricalcolo"] = infer_tipo_ricalcolo(enriched, category)
         enriched["dettaglio_ricostruzione_presente"] = normalize_si_no_flag(
             enriched.get("dettaglio_ricostruzione_presente"),
             "si" if has_reconstructible_detail else "no",

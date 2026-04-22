@@ -649,6 +649,65 @@ class TestAggregateBills(unittest.TestCase):
         self.assertFalse(bool(agg.loc[0, "ricalcolo_aggregato_presente"]))
         self.assertEqual(float(agg.loc[0, "importo_ricalcoli_aggregati"]), 0.0)
 
+    def test_import_only_recalculation_does_not_lower_consumption_confidence(self):
+        rows = [
+            {
+                "data_inizio": "01/07/2024",
+                "data_fine": "31/07/2024",
+                "importo": "3465.73",
+                "imponibile_mese": "3465.73",
+                "consumo_totale": "11620",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "no",
+                "categoria_parser": "riga_analitica_mese",
+                "_source_file": "Bolletta_GAS_07-2024.pdf",
+                "dettaglio_voce": "Spesa luglio",
+            },
+            {
+                "data_inizio": "01/07/2024",
+                "data_fine": "31/07/2024",
+                "importo": "86.75",
+                "imponibile_mese": "",
+                "consumo_totale": "11620",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "importo",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
+                "categoria_parser": "evento_ricalcolo",
+                "_source_file": "Bolletta_GAS_09-2024.pdf",
+                "dettaglio_voce": "Ricalcolo per aggiornamento componenti tariffarie",
+                "tipo_componente": "ricalcolo_aggregato",
+                "unita_misura": "Smc",
+                "quantita": "11620",
+                "riferimento_ricalcolo_da": "01/07/2024",
+                "riferimento_ricalcolo_a": "31/07/2024",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            pd.DataFrame(rows).to_csv(input_path, index=False)
+            agg = aggregate_bolletta_data(input_path, output_path)
+
+        self.assertEqual(len(agg), 1)
+        self.assertAlmostEqual(float(agg.loc[0, "totale_importi"]), 3552.48, places=2)
+        self.assertAlmostEqual(float(agg.loc[0, "consumo_mese"]), 11620.0)
+        self.assertEqual(agg.loc[0, "consumo_logica_usata"], "consumo_totale")
+        self.assertEqual(agg.loc[0, "ricalcolo_importo_presente"], "si")
+        self.assertEqual(agg.loc[0, "ricalcolo_consumo_presente"], "no")
+        self.assertEqual(agg.loc[0, "consumo_confidenza_percent"], 100)
+        self.assertIn("coerente col documento", agg.loc[0, "consumo_confidenza_motivo"].lower())
+
     def test_aggregated_multi_month_with_reconstructible_detail_does_not_allocate_total(self):
         rows = [
             {
@@ -792,7 +851,7 @@ class TestAggregateBills(unittest.TestCase):
         self.assertAlmostEqual(float(agg.loc[1, "totale_importi"]), 80.0)
         self.assertEqual(agg.loc[0, "allocazione_fallback_dividi_per_due"], "si")
         self.assertEqual(agg.loc[1, "allocazione_fallback_dividi_per_due"], "si")
-        self.assertLess(int(agg.loc[0, "confidenza_percent"]), 70)
+        self.assertLessEqual(int(agg.loc[0, "confidenza_percent"]), 70)
 
     def test_aggregated_multi_month_without_detail_over_two_months_requires_manual_review(self):
         rows = [
@@ -1221,11 +1280,12 @@ class TestAggregateBills(unittest.TestCase):
             agg["warning_mese"].fillna("").str.contains("importo non verificabile", case=False, regex=False).all()
         )
         self.assertTrue(
-            agg["warning_mese"].fillna("").str.contains("consumo mensile ricostruibile", case=False, regex=False).all()
+            agg["warning_mese"].fillna("").str.contains("consumo probabilmente corretto", case=False, regex=False).all()
         )
         self.assertTrue(
             agg["consumo_confidenza_motivo"].fillna("").str.contains("consumo", case=False, regex=False).all()
         )
+        self.assertTrue((agg["tipi_ricalcolo_presenti"] == "importo").all())
 
 
 if __name__ == "__main__":

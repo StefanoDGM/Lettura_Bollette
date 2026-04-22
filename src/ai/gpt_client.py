@@ -89,6 +89,12 @@ FLAG DI RIGA OBBLIGATORI
 - Se nello stesso documento ci sono 200 righe normali del mese corrente e 1 riga riferita a un mese precedente, metti `presenza_ricalcolo="si"` SOLO sulla riga del mese precedente; tutte le righe normali del mese corrente restano `no`.
 - `ricalcolo_aggregato_multi_mese` = "si" SOLO sulla singola riga che rappresenta davvero un ricalcolo/storno riferito a piu mesi insieme o a un intervallo multi-mese non allocabile direttamente a un solo mese.
 - Se il riferimento del ricalcolo e' un solo mese (es. `01/05/2024` -> `31/05/2024`), allora `presenza_ricalcolo="si"` ma `ricalcolo_aggregato_multi_mese="no"`.
+- `tipo_ricalcolo` deve valere SOLO su righe con `presenza_ricalcolo="si"` e puo essere:
+  - `importo` = rettifica economica/tariffaria che non modifica il consumo del mese
+  - `consumo` = rettifica del consumo/quantita del mese senza importo economico affidabile
+  - `importo_e_consumo` = rettifica che coinvolge sia importi sia consumo/quantita
+- Se il PDF contiene solo diciture generiche come `(conguaglio)` nel titolo del periodo, `TOTALE BOLLETTA (con riserva di conguaglio)` o formule standard analoghe, NON basta da solo per mettere `presenza_ricalcolo="si"`.
+- In assenza di una vera riga di rettifica, lascia `presenza_ricalcolo="no"`, `ricalcolo_aggregato_multi_mese="no"` e `tipo_ricalcolo=""`.
 - NON trattare questi flag come documentali e NON ripeterli su tutte le righe dello stesso documento.
 
 RICALCOLI AGGREGATI
@@ -191,6 +197,7 @@ JSON_SCHEMA = {
                         "manca_dettaglio_consumo": {"type": "string"},
                         "presenza_ricalcolo": {"type": "string"},
                         "ricalcolo_aggregato_multi_mese": {"type": "string"},
+                        "tipo_ricalcolo": {"type": "string"},
                         "potenza_disponibile": {"type": "string"},
                         "potenza_impegnata": {"type": "string"},
                         "data_indirizzo": {"type": "string"},
@@ -212,6 +219,7 @@ JSON_SCHEMA = {
                         "manca_dettaglio_consumo",
                         "presenza_ricalcolo",
                         "ricalcolo_aggregato_multi_mese",
+                        "tipo_ricalcolo",
                     ],
                 },
             }
@@ -409,7 +417,7 @@ def review_gpt_with_pdf(
         "- Se nel riepilogo economico del mese compare `Altre partite` e contribuisce al totale/imponibile, non saltarla: includila come macro-voce `altro`, salvo sia chiaramente solo more/sanzioni/solleciti esclusi.\n"
         "- Se il dettaglio e' completo, fai tornare la somma delle righe economiche al valore corretto del periodo.\n"
         "- Se il documento contiene anche altri mesi o ricalcoli di altri periodi, tienili separati con le loro date corrette.\n"
-        "- Valorizza correttamente i flag DI RIGA `presenza_ricalcolo` e `ricalcolo_aggregato_multi_mese`: metti `si` solo sulla riga rettificata; se il periodo copre un solo mese, `ricalcolo_aggregato_multi_mese` deve restare `no`.\n"
+        "- Valorizza correttamente i flag DI RIGA `presenza_ricalcolo`, `ricalcolo_aggregato_multi_mese` e `tipo_ricalcolo`: metti `si` solo sulla riga rettificata; se il periodo copre un solo mese, `ricalcolo_aggregato_multi_mese` deve restare `no`; usa `tipo_ricalcolo=importo`, `consumo` o `importo_e_consumo` solo sulle righe davvero rettificate.\n"
         "- Restituisci di nuovo l'intero JSON finale con tutte le righe del documento.\n"
     )
     return _call_rows_prompt(pdf_path, model, review_prompt, context_hint=context_hint)

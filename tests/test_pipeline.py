@@ -290,6 +290,9 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
         self.assertEqual(enriched[1]["ricalcolo_aggregato_multi_mese"], "no")
         self.assertEqual(enriched[2]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[0]["tipo_ricalcolo"], "")
+        self.assertEqual(enriched[1]["tipo_ricalcolo"], "")
+        self.assertEqual(enriched[2]["tipo_ricalcolo"], "importo")
         self.assertTrue(
             all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
         )
@@ -326,10 +329,34 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
         self.assertEqual(enriched[1]["presenza_ricalcolo"], "si")
         self.assertEqual(enriched[1]["ricalcolo_aggregato_multi_mese"], "si")
+        self.assertEqual(enriched[1]["tipo_ricalcolo"], "importo")
         self.assertEqual(enriched[1]["categoria_parser"], "totale_aggregato_multi_mese")
         self.assertTrue(
             all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
         )
+
+    def test_enrich_extracted_rows_does_not_treat_generic_conguaglio_wording_as_recalculation(self):
+        rows = [
+            {
+                "_source_file": "bolletta_luglio.pdf",
+                "data_inizio": "01/07/2024",
+                "data_fine": "31/07/2024",
+                "dettaglio_voce": "Spesa per la materia gas naturale",
+                "importo": "100.00",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "note": "Totale bolletta (con riserva di conguaglio)",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "categoria_parser": "",
+            }
+        ]
+
+        enriched = enrich_extracted_rows(rows)
+
+        self.assertEqual(enriched[0]["presenza_ricalcolo"], "no")
+        self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[0]["tipo_ricalcolo"], "")
 
     def test_reconcile_standard_month_with_vat_summary_replaces_misread_imponibile(self):
         rows = [

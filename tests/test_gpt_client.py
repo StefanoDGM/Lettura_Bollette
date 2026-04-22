@@ -40,6 +40,7 @@ class TestGptClient(unittest.TestCase):
         self.assertIn("riferimento_ricalcolo_a", properties)
         self.assertIn("presenza_ricalcolo", properties)
         self.assertIn("ricalcolo_aggregato_multi_mese", properties)
+        self.assertIn("tipo_ricalcolo", properties)
         self.assertIn("consumo_dettaglio_riga", required)
         self.assertIn("manca_dettaglio_consumo", required)
         self.assertIn("tipo_componente", required)
@@ -47,6 +48,7 @@ class TestGptClient(unittest.TestCase):
         self.assertIn("riferimento_ricalcolo_a", required)
         self.assertIn("presenza_ricalcolo", required)
         self.assertIn("ricalcolo_aggregato_multi_mese", required)
+        self.assertIn("tipo_ricalcolo", required)
         self.assertNotIn("blocco_ricalcolo_aggregato", properties)
         self.assertNotIn("ricalcolo_spalmabile", properties)
         self.assertNotIn("manca_dettaglio_ricalcolo", properties)
@@ -82,6 +84,7 @@ class TestGptClient(unittest.TestCase):
         self.assertEqual(rows[0]["riferimento_ricalcolo_a"], "")
         self.assertEqual(rows[0]["presenza_ricalcolo"], "")
         self.assertEqual(rows[0]["ricalcolo_aggregato_multi_mese"], "")
+        self.assertEqual(rows[0]["tipo_ricalcolo"], "")
 
     def test_parser_keeps_original_imponibile_value(self):
         raw = json.dumps(

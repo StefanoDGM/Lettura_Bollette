@@ -10,6 +10,7 @@ ROW_DEFAULTS = {
     "riferimento_ricalcolo_a": "",
     "presenza_ricalcolo": "",
     "ricalcolo_aggregato_multi_mese": "",
+    "tipo_ricalcolo": "",
 }
 
 

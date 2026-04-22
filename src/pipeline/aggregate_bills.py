@@ -55,6 +55,7 @@ CORE_COLUMNS = [
     "riferimento_ricalcolo_a",
     "presenza_ricalcolo",
     "ricalcolo_aggregato_multi_mese",
+    "tipo_ricalcolo",
 ]
 WARNING_FLAG_COLUMNS = [
     "ricalcolo_presente",
@@ -77,7 +78,6 @@ VALID_CATEGORIE_PARSER = {
 }
 RICALCOLO_KEYWORDS = (
     "ricalcolo",
-    "conguaglio",
     "importi gia contabilizzati",
     "importi già contabilizzati",
     "bollette precedenti",
@@ -86,12 +86,22 @@ RICALCOLO_KEYWORDS = (
 )
 STORNO_KEYWORDS = ("storno", "rettifica", "accredito")
 ACCONTO_PRECEDENTE_KEYWORDS = ("acconto", "acconti")
+CONSUMO_RICALCOLO_KEYWORDS = (
+    "ricalcolo consum",
+    "storno consum",
+    "consumo rideterminato",
+    "rettifica consum",
+    "ricalcolo smc",
+    "ricalcolo mc",
+    "ricalcolo kwh",
+)
 RECALC_EVENT_CATEGORIES = {
     "evento_ricalcolo",
     "evento_storno",
     "evento_acconto_precedente",
     "totale_aggregato_multi_mese",
 }
+VALID_TIPI_RICALCOLO = {"importo", "consumo", "importo_e_consumo"}
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -259,6 +269,35 @@ def normalize_component(value) -> str:
     return str(value).strip().lower()
 
 
+def normalize_tipo_ricalcolo(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip().lower()
+    return text if text in VALID_TIPI_RICALCOLO else ""
+
+
+def row_has_consumo_recalc_signal(row: pd.Series) -> bool:
+    if pd.notna(row.get("_consumo_dettaglio_num")):
+        return True
+
+    text = normalized_text(row.get("dettaglio_voce"), row.get("note"))
+    if any(keyword in text for keyword in CONSUMO_RICALCOLO_KEYWORDS):
+        return True
+
+    quantity = row.get("_quantita_num")
+    unit = str(row.get("unita_misura", "") or "").strip().lower()
+    dettaglio_consumo = parse_bool_si_no(row.get("manca_dettaglio_consumo"))
+    if pd.notna(quantity) and ("smc" in unit or "kwh" in unit or unit == "mc"):
+        if float(quantity) < 0:
+            return True
+        if dettaglio_consumo is True:
+            return False
+        if dettaglio_consumo is False:
+            return True
+
+    return False
+
+
 def has_true_multi_month_scope(row: pd.Series) -> bool:
     return len(month_range(row.get("_rif_da_dt"), row.get("_rif_a_dt"))) > 1
 
@@ -270,6 +309,25 @@ def is_recalc_event_category(category: str) -> bool:
 def is_row_multi_month_recalc(row: pd.Series) -> bool:
     category = str(row.get("_categoria_parser", "") or "").strip().lower()
     return category == "totale_aggregato_multi_mese" or has_true_multi_month_scope(row)
+
+
+def infer_tipo_ricalcolo(row: pd.Series) -> str:
+    category = str(row.get("_categoria_parser", row.get("categoria_parser", "")) or "").strip().lower()
+    if category not in RECALC_EVENT_CATEGORIES:
+        return ""
+
+    raw_value = normalize_tipo_ricalcolo(row.get("tipo_ricalcolo"))
+    if raw_value:
+        return raw_value
+
+    has_consumo_signal = row_has_consumo_recalc_signal(row)
+    has_import_signal = pd.notna(row.get("_importo_num"))
+
+    if has_consumo_signal and has_import_signal:
+        return "importo_e_consumo"
+    if has_consumo_signal:
+        return "consumo"
+    return "importo"
 
 
 def infer_tipo_componente(row: pd.Series) -> str:
@@ -357,6 +415,7 @@ def finalize_document_flags(prepared: pd.DataFrame) -> pd.DataFrame:
     for column in (
         "presenza_ricalcolo",
         "ricalcolo_aggregato_multi_mese",
+        "tipo_ricalcolo",
         "dettaglio_ricostruzione_presente",
         "totale_documento_puo_non_coincidere_con_mese_corrente",
         "categoria_parser",
@@ -451,13 +510,23 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     prepared = finalize_document_flags(prepared)
+    prepared["_tipo_ricalcolo_norm"] = prepared.apply(infer_tipo_ricalcolo, axis=1)
+    prepared["tipo_ricalcolo"] = prepared["_tipo_ricalcolo_norm"]
+    prepared["_ricalcolo_importo_bool"] = (
+        prepared["_presenza_ricalcolo_bool"]
+        & prepared["_tipo_ricalcolo_norm"].isin({"importo", "importo_e_consumo"})
+    )
+    prepared["_ricalcolo_consumo_bool"] = (
+        prepared["_presenza_ricalcolo_bool"]
+        & prepared["_tipo_ricalcolo_norm"].isin({"consumo", "importo_e_consumo"})
+    )
     prepared["_row_ricalcolo_multi_bool"] = prepared.apply(is_row_multi_month_recalc, axis=1)
     prepared["_row_is_aggregated_event"] = (
         prepared["_categoria_parser"].eq("totale_aggregato_multi_mese")
         | (
             prepared["_row_ricalcolo_multi_bool"]
             & prepared["_importo_num"].notna()
-            & prepared["_presenza_ricalcolo_bool"]
+            & prepared["_ricalcolo_importo_bool"]
         )
     )
     prepared["_warning_messages"] = [[] for _ in range(len(prepared))]
@@ -608,8 +677,12 @@ def confidence_label_from_score(score: int) -> str:
 
 def compute_importo_confidence_profile(data: dict) -> dict[str, str | int]:
     importo_logic = str(data.get("importo_logica_usata", "") or "").strip()
-    ricalcolo_presente = str(data.get("ricalcolo_presente", "")).strip().lower() == "si"
-    ricalcolo_aggregato = str(data.get("ricalcolo_aggregato_multi_mese", "")).strip().lower() == "si"
+    ricalcolo_presente = str(
+        data.get("ricalcolo_importo_presente", data.get("ricalcolo_presente", ""))
+    ).strip().lower() == "si"
+    ricalcolo_aggregato = str(
+        data.get("ricalcolo_importo_aggregato_multi_mese", data.get("ricalcolo_aggregato_multi_mese", ""))
+    ).strip().lower() == "si"
     dettaglio_ricostruibile = str(data.get("dettaglio_ricostruzione_presente", "")).strip().lower() == "si"
     consumo_ricostruibile = str(data.get("consumo_mese_ricostruibile", "")).strip().lower() == "si"
     importo_ricostruibile = str(data.get("importo_mese_ricostruibile", "")).strip().lower() == "si"
@@ -684,8 +757,15 @@ def compute_importo_confidence_profile(data: dict) -> dict[str, str | int]:
 
 def compute_consumo_confidence_profile(data: dict) -> dict[str, str | int]:
     consumo_logic = str(data.get("consumo_logica_usata", "") or "").strip()
-    ricalcolo_presente = str(data.get("ricalcolo_presente", "")).strip().lower() == "si"
-    ricalcolo_aggregato = str(data.get("ricalcolo_aggregato_multi_mese", "")).strip().lower() == "si"
+    ricalcolo_presente = str(
+        data.get("ricalcolo_consumo_presente", data.get("ricalcolo_presente", ""))
+    ).strip().lower() == "si"
+    ricalcolo_aggregato = str(
+        data.get(
+            "ricalcolo_consumo_aggregato_multi_mese",
+            "si" if ricalcolo_presente and str(data.get("ricalcolo_aggregato_multi_mese", "")).strip().lower() == "si" else "no",
+        )
+    ).strip().lower() == "si"
     consumo_ricostruibile = str(data.get("consumo_mese_ricostruibile", "")).strip().lower() == "si"
     manca_dettaglio_consumo = str(data.get("manca_dettaglio_consumo_mese", "")).strip().lower() == "si"
     consumo_dettaglio_righe_raw = data.get("consumo_dettaglio_righe", "")
@@ -806,17 +886,12 @@ def compute_consumo_mese(group: pd.DataFrame) -> dict:
 
     source_count = group["_source_file"].replace("", pd.NA).dropna().nunique()
     detail_mixed_sign = not detail_values.empty and (detail_values.lt(0).any() and detail_values.gt(0).any())
-    recalc_present = bool(
-        group["_presenza_ricalcolo_bool"].any()
-        or group["_categoria_parser"].isin(
-            {"evento_ricalcolo", "evento_storno", "evento_acconto_precedente", "totale_aggregato_multi_mese"}
-        ).any()
-        or group["_allocated_from_recalc"].any()
-    )
+    recalc_present = bool(group["_ricalcolo_consumo_bool"].any())
     multi_month_recalc_present = bool(
-        group["_allocated_from_recalc"].any()
-        or group["_row_is_aggregated_event"].any()
-        or group["_row_ricalcolo_multi_bool"].any()
+        (
+            group["_row_ricalcolo_multi_bool"]
+            & group["_ricalcolo_consumo_bool"]
+        ).any()
     )
     mese_ricalcolato = (
         source_count > 1
@@ -933,10 +1008,7 @@ def compute_importo_mese(group: pd.DataFrame) -> dict:
     base_group = group.loc[~group["_allocated_from_recalc"]].copy()
     recalc_group = group.loc[group["_allocated_from_recalc"]].copy()
     month_has_any_recalc = bool(
-        group["_presenza_ricalcolo_bool"].any()
-        or group["_categoria_parser"].isin(
-            {"evento_ricalcolo", "evento_storno", "evento_acconto_precedente", "totale_aggregato_multi_mese"}
-        ).any()
+        group["_ricalcolo_importo_bool"].any()
         or group["_allocated_from_recalc"].any()
     )
 
@@ -951,14 +1023,10 @@ def compute_importo_mese(group: pd.DataFrame) -> dict:
             imponibile_value = source_group["_imponibile_mese_num"].dropna().max()
             detail_sum = float(source_group["_importo_num"].fillna(0).sum())
             detail_count = int(source_group["_importo_num"].notna().sum())
-            source_presence_flag = bool(source_group["_presenza_ricalcolo_bool"].any())
-            source_agg_flag = bool(source_group["_ricalcolo_multi_bool"].any())
+            source_presence_flag = bool(source_group["_ricalcolo_importo_bool"].any())
+            source_agg_flag = bool((source_group["_ricalcolo_multi_bool"] & source_group["_ricalcolo_importo_bool"]).any())
             source_presence_recalc = bool(
                 source_presence_flag
-                or
-                source_group["_categoria_parser"].isin(
-                    {"evento_ricalcolo", "evento_storno", "evento_acconto_precedente", "totale_aggregato_multi_mese"}
-                ).any()
                 or source_group["_allocated_from_recalc"].any()
             )
             source_agg_multi = bool(
@@ -1513,6 +1581,8 @@ def aggregate_bolletta_data(input_path, output_path) -> pd.DataFrame:
         methods = unique_nonempty_texts(group.loc[group["_allocated_from_recalc"], "_allocation_method"])
         source_files = unique_nonempty_texts(group["_source_file"])
         month_warning_flags = merge_warning_flags(importo_info["warning_flags"])
+        import_recalc_present = bool(group["_ricalcolo_importo_bool"].any() or group["_allocated_from_recalc"].any())
+        consumo_recalc_present = bool(group["_ricalcolo_consumo_bool"].any())
         recalc_related_group = group.loc[
             group["_presenza_ricalcolo_bool"] | group["_allocated_from_recalc"] | group["_row_is_aggregated_event"]
         ]
@@ -1522,6 +1592,13 @@ def aggregate_bolletta_data(input_path, output_path) -> pd.DataFrame:
         if bool(group["_presenza_ricalcolo_bool"].any()):
             mark_warning_flag(month_warning_flags, "ricalcolo_presente")
         group_has_multi_recalc = bool(group["_row_ricalcolo_multi_bool"].any() or group["_allocated_from_recalc"].any())
+        group_has_multi_import_recalc = bool(
+            (group["_row_ricalcolo_multi_bool"] & group["_ricalcolo_importo_bool"]).any()
+            or group["_allocated_from_recalc"].any()
+        )
+        group_has_multi_consumo_recalc = bool(
+            (group["_row_ricalcolo_multi_bool"] & group["_ricalcolo_consumo_bool"]).any()
+        )
         if group_has_multi_recalc:
             mark_warning_flag(month_warning_flags, "ricalcolo_aggregato_multi_mese")
         if bool(recalc_related_group["_dettaglio_ricostruzione_bool"].any()) and group_has_multi_recalc:
@@ -1545,7 +1622,17 @@ def aggregate_bolletta_data(input_path, output_path) -> pd.DataFrame:
                 "consumo_mese_ricostruibile": consumo_info["consumo_mese_ricostruibile"],
                 "importo_logica_usata": importo_info["importo_logica_usata"],
                 "importo_mese_ricostruibile": importo_info["importo_mese_ricostruibile"],
-                "mese_ricalcolato": bool(consumo_info["mese_ricalcolato"] or group["_presenza_ricalcolo_bool"].any()),
+                "mese_ricalcolato": bool(
+                    consumo_info["mese_ricalcolato"] or import_recalc_present or consumo_recalc_present
+                ),
+                "ricalcolo_presente": "si" if bool(group["_presenza_ricalcolo_bool"].any()) else "no",
+                "ricalcolo_importo_presente": "si" if import_recalc_present else "no",
+                "ricalcolo_consumo_presente": "si" if consumo_recalc_present else "no",
+                "ricalcolo_importo_aggregato_multi_mese": "si" if group_has_multi_import_recalc else "no",
+                "ricalcolo_consumo_aggregato_multi_mese": "si" if group_has_multi_consumo_recalc else "no",
+                "tipi_ricalcolo_presenti": " | ".join(
+                    unique_nonempty_texts(group.loc[group["_presenza_ricalcolo_bool"], "_tipo_ricalcolo_norm"])
+                ),
                 "source_file_distinti": int(len(source_files)),
                 "source_file_elenco": " | ".join(source_files),
                 "consumi_totali_distinti": int(consumo_info["consumi_totali_distinti"]),
