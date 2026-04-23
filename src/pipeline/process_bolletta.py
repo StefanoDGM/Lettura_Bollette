@@ -325,27 +325,42 @@ def extract_riepilogo_iva_section(pdf_text: str) -> str:
     return normalized
 
 
+def extract_vat_imponibile_components_from_text(pdf_text: str) -> list[Decimal]:
+    normalized = extract_riepilogo_iva_section(pdf_text)
+    if not normalized:
+        return []
+
+    components: list[Decimal] = []
+    patterns = (
+        r"iva\s+(?:vendite\s+)?(?:al\s+)?\d{1,2}\s*%[^0-9]{0,80}imponibile(?:\s+di\s+euro|\s+euro)?[^0-9]{0,20}([0-9][0-9\.,]*)",
+        r"iva\s+(?:vendite\s+)?(?:al\s+)?\d{1,2}\s*%[^0-9]{0,20}su[^0-9]{0,20}([0-9][0-9\.,]*)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            value = parse_decimal_for_audit(match.group(1))
+            if value is not None and value not in components:
+                components.append(value)
+    return components
+
+
 def extract_vat_imponibile_candidates_from_text(pdf_text: str) -> list[Decimal]:
     normalized = extract_riepilogo_iva_section(pdf_text)
     if not normalized:
         return []
 
     candidates: list[Decimal] = []
+    total_candidates: list[Decimal] = []
+    vat_components = extract_vat_imponibile_components_from_text(pdf_text)
 
     patterns = (
-        r"iva\s+22\s*%[^0-9]{0,80}imponibile(?:\s+di\s+euro|\s+euro)?[^0-9]{0,20}([0-9][0-9\.,]*)",
         r"totale\s+imponibile[^0-9]{0,20}([0-9][0-9\.,]*)",
-        r"iva\s+al\s+5\s*%[^0-9]{0,80}imponibile(?:\s+di\s+euro|\s+euro)?[^0-9]{0,20}([0-9][0-9\.,]*)",
-        r"iva\s+5\s*%[^0-9]{0,80}imponibile(?:\s+di\s+euro|\s+euro)?[^0-9]{0,20}([0-9][0-9\.,]*)",
-        r"iva\s+vendite\s+22\s*%[^0-9]{0,10}su[^0-9]{0,20}([0-9][0-9\.,]*)",
-        r"imponibile(?:\s+di\s+euro|\s+euro)?[^0-9]{0,20}([0-9][0-9\.,]*)[^0-9]{0,80}iva\s+al\s+5\s*%",
         r"totale\s+servizi\s+gas\s+naturale[^0-9]{0,20}([0-9][0-9\.,]*)",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
             value = parse_decimal_for_audit(match.group(1))
             if value is not None:
-                candidates.append(value)
+                total_candidates.append(value)
 
     lowered = normalized.lower()
     if "iva al 5" in lowered or "iva 5%" in lowered:
@@ -356,7 +371,18 @@ def extract_vat_imponibile_candidates_from_text(pdf_text: str) -> list[Decimal]:
         ):
             value = parse_decimal_for_audit(match.group(1))
             if value is not None:
-                candidates.append(value)
+                total_candidates.append(value)
+
+    for candidate in total_candidates:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    if len(vat_components) > 1:
+        vat_components_sum = sum(vat_components, Decimal("0"))
+        if vat_components_sum not in candidates:
+            candidates.append(vat_components_sum)
+    elif len(vat_components) == 1 and not candidates:
+        candidates.append(vat_components[0])
 
     unique_candidates: list[Decimal] = []
     for candidate in candidates:

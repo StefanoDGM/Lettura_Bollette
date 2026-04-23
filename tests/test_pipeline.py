@@ -116,6 +116,17 @@ class TestPipeline(unittest.TestCase):
 
         self.assertEqual(imponibile, Decimal("25615.61"))
 
+    def test_extract_vat_imponibile_from_text_sums_multiple_vat_bases_for_single_month_document(self):
+        pdf_text = """
+        DETTAGLIO FISCALE DI QUESTA BOLLETTA
+        IVA 10% su imponibile di euro 510,07
+        IVA 22% su imponibile di euro 3.107,90
+        """
+
+        imponibile = extract_vat_imponibile_from_text(pdf_text)
+
+        self.assertEqual(imponibile, Decimal("3617.97"))
+
     def test_supplement_summary_macro_rows_adds_altre_partite_when_missing(self):
         rows = [
             {
@@ -486,6 +497,43 @@ class TestPipeline(unittest.TestCase):
 
         self.assertTrue(all(row["imponibile_mese"] == "25615.61" for row in adjusted))
         self.assertIn("art15_excluded_in_iva_summary", adjusted[0]["note"])
+
+    def test_reconcile_standard_month_with_vat_summary_uses_sum_of_multiple_vat_bases(self):
+        rows = [
+            {
+                "data_inizio": "01/01/2024",
+                "data_fine": "31/01/2024",
+                "importo": "2952.54",
+                "imponibile_mese": "3107.90",
+                "manca_dettaglio": "no",
+                "presenza_ricalcolo": "no",
+                "note": "",
+            },
+            {
+                "data_inizio": "01/01/2024",
+                "data_fine": "31/01/2024",
+                "importo": "665.43",
+                "imponibile_mese": "3107.90",
+                "manca_dettaglio": "no",
+                "presenza_ricalcolo": "no",
+                "note": "",
+            },
+        ]
+
+        from unittest.mock import patch
+
+        pdf_text = """
+        Dettaglio fiscale di questa bolletta
+        IVA 10% su imponibile di euro 510,07
+        IVA 22% su imponibile di euro 3.107,90
+        """
+
+        with patch("src.pipeline.process_bolletta.extract_text_from_pdf", return_value=pdf_text):
+            adjusted = reconcile_standard_month_with_vat_summary(Path("sample.pdf"), rows)
+
+        self.assertTrue(all(row["imponibile_mese"] == "3617.97" for row in adjusted))
+        self.assertTrue(all(row["manca_dettaglio"] == "no" for row in adjusted))
+        self.assertIn(VAT_REPARSE_NOTE, adjusted[0]["note"])
 
     def test_find_detail_imponibile_issues_when_detail_does_not_match_single_period(self):
         rows = [
