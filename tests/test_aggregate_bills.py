@@ -12,6 +12,7 @@ from src.pipeline.aggregate_bills import (
     resolve_input_path,
     resolve_output_path,
 )
+from src.pipeline.process_bolletta import enrich_extracted_rows, filter_financial_accounting_rows
 
 
 class TestAggregateBills(unittest.TestCase):
@@ -707,6 +708,106 @@ class TestAggregateBills(unittest.TestCase):
         self.assertEqual(agg.loc[0, "ricalcolo_consumo_presente"], "no")
         self.assertEqual(agg.loc[0, "consumo_confidenza_percent"], 100)
         self.assertIn("coerente col documento", agg.loc[0, "consumo_confidenza_motivo"].lower())
+
+    def test_enerfin_may_keeps_energy_acconto_and_conguaglio_but_excludes_financial_advance(self):
+        raw_rows = [
+            {
+                "_source_file": "05_2024.pdf",
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Acconto Maggio 2024 - materia energia",
+                "tipo_componente": "variabile",
+                "quantita": "1",
+                "unita_misura": "",
+                "prezzo_aliquota": "",
+                "importo": "64464.82",
+                "imponibile_mese": "64464.82",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "consumo_totale": "",
+                "consumo_dettaglio_riga": "",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "",
+                "note": "",
+            },
+            {
+                "_source_file": "05_2024.pdf",
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Anticipo fornitura E.E. Maggio 2024",
+                "tipo_componente": "altro",
+                "quantita": "",
+                "unita_misura": "",
+                "prezzo_aliquota": "",
+                "importo": "-65573.77",
+                "imponibile_mese": "",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "consumo_totale": "",
+                "consumo_dettaglio_riga": "",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "",
+                "note": "Riepilogo oneri diversi - altre partite",
+            },
+            {
+                "_source_file": "05_2024_2.pdf",
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Anticipo fornitura E.E. Maggio 2024",
+                "tipo_componente": "altro",
+                "quantita": "",
+                "unita_misura": "",
+                "prezzo_aliquota": "",
+                "importo": "65573.77",
+                "imponibile_mese": "",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "consumo_totale": "",
+                "consumo_dettaglio_riga": "",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "",
+                "note": "Altre partite",
+            },
+            {
+                "_source_file": "06_2024.pdf",
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Conguaglio Maggio 2024",
+                "tipo_componente": "ricalcolo_aggregato",
+                "quantita": "",
+                "unita_misura": "",
+                "prezzo_aliquota": "",
+                "importo": "7669.65",
+                "imponibile_mese": "",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "consumo_totale": "",
+                "consumo_dettaglio_riga": "",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "importo",
+                "riferimento_ricalcolo_da": "01/05/2024",
+                "riferimento_ricalcolo_a": "31/05/2024",
+                "note": "",
+            },
+        ]
+
+        filtered_rows = filter_financial_accounting_rows(raw_rows)
+        enriched_rows = enrich_extracted_rows(filtered_rows)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            pd.DataFrame(enriched_rows).to_csv(input_path, index=False)
+            agg = aggregate_bolletta_data(input_path, output_path)
+
+        self.assertEqual(len(filtered_rows), 2)
+        self.assertAlmostEqual(float(agg.loc[0, "totale_importi"]), 72134.47, places=2)
+        self.assertEqual(agg.loc[0, "importo_logica_usata"], "imponibile_documento_piu_rettifiche_nel_mese")
 
     def test_aggregated_multi_month_with_reconstructible_detail_does_not_allocate_total(self):
         rows = [

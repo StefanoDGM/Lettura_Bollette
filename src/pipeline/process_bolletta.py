@@ -95,6 +95,43 @@ RICALCOLO_KEYWORDS = (
 )
 STORNO_KEYWORDS = ("storno", "rettifica", "accredito")
 ACCONTO_PRECEDENTE_KEYWORDS = ("acconto", "acconti")
+ENERGY_COMPETENCE_KEYWORDS = (
+    "materia energia",
+    "materia prima gas",
+    "materia gas",
+    "quota energia",
+    "energia attiva",
+    "energia reattiva",
+    "perdite di rete",
+    "dispacciamento",
+    "trasporto",
+    "rete",
+    "distribuzione",
+    "gestione contatore",
+    "oneri di sistema",
+    "accisa",
+    "addizionale",
+    "imposte di consumo",
+    "acconto",
+    "conguaglio",
+    "saldo",
+    "ricalcolo",
+)
+ENERGY_UNIT_HINTS = ("kwh", "smc", "mc", "€/kwh", "€/smc", "€/mc", "cliente/mese")
+FINANCIAL_ACCOUNTING_KEYWORDS = (
+    "anticipo fornitura",
+    "restituzione anticipo",
+    "compensazione anticipo",
+    "deposito",
+    "cauzione",
+    "deposito cauzionale",
+    "imposta di bollo",
+    "interessi",
+    "mora",
+    "sollecito",
+    "riporto",
+)
+GENERIC_ACCOUNTING_SECTION_KEYWORDS = ("altre partite", "oneri diversi")
 CONSUMO_RICALCOLO_KEYWORDS = (
     "ricalcolo consum",
     "storno consum",
@@ -437,6 +474,122 @@ def extract_summary_amount_from_text(pdf_text: str, label: str) -> Decimal | Non
     return parse_decimal_for_audit(match.group(1))
 
 
+def text_has_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(keyword in lowered for keyword in keywords)
+
+
+def extract_context_windows_around_keyword(pdf_text: str, keyword: str, window: int = 260) -> list[str]:
+    if not pdf_text:
+        return []
+    normalized = re.sub(r"\s+", " ", pdf_text.replace("\xa0", " ")).strip()
+    lowered = normalized.lower()
+    search = str(keyword or "").strip().lower()
+    if not search:
+        return []
+
+    contexts: list[str] = []
+    start_index = 0
+    while True:
+        match_index = lowered.find(search, start_index)
+        if match_index == -1:
+            break
+        context_start = max(0, match_index - window)
+        context_end = min(len(normalized), match_index + len(search) + window)
+        contexts.append(normalized[context_start:context_end])
+        start_index = match_index + len(search)
+    return contexts
+
+
+def row_has_energy_competence_signal(row: dict) -> bool:
+    text = normalized_row_text(row)
+    tipo = str(row.get("tipo_componente", "")).strip().lower()
+    unit = str(row.get("unita_misura", "")).strip().lower()
+    quantity = parse_decimal_for_audit(row.get("quantita"))
+    unit_price = parse_decimal_for_audit(row.get("prezzo_aliquota"))
+    data_inizio = str(row.get("data_inizio", "")).strip()
+    data_fine = str(row.get("data_fine", "")).strip()
+    rif_da = str(row.get("riferimento_ricalcolo_da", "")).strip()
+    rif_a = str(row.get("riferimento_ricalcolo_a", "")).strip()
+
+    if tipo in {"variabile", "fissa", "trasporto", "oneri", "imposte"}:
+        return True
+    if text_has_any_keyword(text, ENERGY_COMPETENCE_KEYWORDS):
+        return True
+    if quantity is not None and any(token in unit for token in ("kwh", "smc", "mc")):
+        return True
+    if unit_price is not None and any(token in unit for token in ENERGY_UNIT_HINTS):
+        return True
+    if rif_da and rif_a and text_has_any_keyword(text, ("acconto", "conguaglio", "saldo", "ricalcolo", "rettifica", "storno")):
+        return True
+    if data_inizio and data_fine and text_has_any_keyword(text, ("acconto", "conguaglio", "saldo")):
+        return True
+    return False
+
+
+def is_financial_accounting_row(row: dict) -> bool:
+    text = normalized_row_text(row)
+    if not text:
+        return False
+    if text_has_any_keyword(text, FINANCIAL_ACCOUNTING_KEYWORDS):
+        return not row_has_energy_competence_signal(row)
+    if text_has_any_keyword(text, GENERIC_ACCOUNTING_SECTION_KEYWORDS) and not row_has_energy_competence_signal(row):
+        return True
+    return False
+
+
+def should_add_summary_altre_partite_row(pdf_text: str) -> bool:
+    contexts = extract_context_windows_around_keyword(pdf_text, "Altre partite", window=120)
+    if not contexts:
+        return False
+
+    has_energy_context = False
+    for context in contexts:
+        if text_has_any_keyword(context, FINANCIAL_ACCOUNTING_KEYWORDS):
+            return False
+        has_energy_label = text_has_any_keyword(
+            context,
+            (
+                "energia",
+                "gas",
+                "trasporto",
+                "rete",
+                "distribuzione",
+                "oneri",
+                "accise",
+                "addizionali",
+                "corrispettivo",
+                "perequativ",
+            ),
+        )
+        has_energy_structure = bool(
+            re.search(r"\b[0-9]+(?:[\.,][0-9]+)?\s*(kwh|smc|mc)\b", context, flags=re.IGNORECASE)
+        ) or text_has_any_keyword(context, ENERGY_UNIT_HINTS)
+        if has_energy_label and has_energy_structure:
+            has_energy_context = True
+    return has_energy_context
+
+
+def filter_financial_accounting_rows(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+
+    filtered_rows: list[dict] = []
+    removed_details: list[str] = []
+    for row in rows:
+        if is_financial_accounting_row(row):
+            removed_details.append(str(row.get("dettaglio_voce", "")).strip() or "<senza dettaglio>")
+            continue
+        filtered_rows.append(row)
+
+    if removed_details:
+        preview = ", ".join(removed_details[:5])
+        logging.info("[AUDIT] escluse %s righe contabili/finanziarie non energetiche: %s", len(removed_details), preview)
+    return filtered_rows
+
+
 def select_primary_period_for_summary(rows: list[dict]) -> tuple[str, str] | None:
     grouped = group_rows_by_period(rows)
     best_key: tuple[str, str] | None = None
@@ -461,6 +614,12 @@ def supplement_summary_macro_rows(
     pdf_text = pdf_text if pdf_text is not None else extract_text_from_pdf(pdf_path)
     altre_partite = extract_summary_amount_from_text(pdf_text, "Altre partite")
     if altre_partite is None or altre_partite <= 0:
+        return rows
+    if not should_add_summary_altre_partite_row(pdf_text):
+        logging.info(
+            "[AUDIT] %s: macro-voce `Altre partite` non aggiunta dal riepilogo perche non chiaramente energetica",
+            pdf_path.name,
+        )
         return rows
 
     if any("altre partite" in str(row.get("dettaglio_voce", "")).strip().lower() for row in rows):
@@ -1059,6 +1218,7 @@ def recheck_rows_if_needed(
 
     if reviewed_rows:
         reviewed_rows = ensure_imponibile_validation_fields(reviewed_rows)
+        reviewed_rows = filter_financial_accounting_rows(reviewed_rows)
         reviewed_rows = supplement_summary_macro_rows(pdf_path, reviewed_rows)
         reviewed_rows = normalize_detail_flags_from_rows(reviewed_rows)
         reviewed_issues = find_detail_imponibile_issues(reviewed_rows)
@@ -1208,8 +1368,10 @@ def process_all_pdfs(
                     if alert and alert not in platform_alerts:
                         platform_alerts.append(alert)
                     rows = extract_rows_from_pdf(fp, MODEL_FALLBACK, context_hint=context_hint)
+                pdf_text = extract_text_from_pdf(fp)
                 rows = ensure_imponibile_validation_fields(rows)
-                rows = supplement_summary_macro_rows(fp, rows)
+                rows = filter_financial_accounting_rows(rows)
+                rows = supplement_summary_macro_rows(fp, rows, pdf_text=pdf_text)
                 rows = normalize_detail_flags_from_rows(rows)
                 rows = reconcile_standard_month_with_vat_summary(fp, rows)
                 rows = recheck_rows_if_needed(fp, rows, MODEL_PRIMARY, context_hint=context_hint)

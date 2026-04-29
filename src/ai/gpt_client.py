@@ -56,9 +56,10 @@ NON creare righe per:
   ECCEZIONE IMPOSTE
   Accise, addizionali e imposte di consumo vanno incluse come righe.
   Se esistono solo come totale aggregato, includi una sola riga e usa `manca_dettaglio="si"`.
-  - Se il riepilogo economico del mese mostra `Altre partite` o voce equivalente che contribuisce al totale della fornitura/imponibile,
-    includi una riga macro `tipo_componente="altro"` anche se il PDF non dettaglia le sottovoci.
-  - NON includerla solo se il documento chiarisce che si tratta esclusivamente di more, sanzioni o soli solleciti esclusi.
+  - NON includere automaticamente `Altre partite` / `Oneri diversi`.
+  - Includi una voce in `Altre partite` solo se rappresenta chiaramente un costo energetico del mese, con periodo, quantita, prezzo o componenti energia/rete/oneri/imposte.
+  - Escludi invece le `Altre partite` che sono solo partite finanziarie/contabili: `Anticipo fornitura E.E.`, compensazioni/restituzioni di anticipo, depositi/cauzioni, interessi, more, solleciti, imposta di bollo.
+  - Un blocco `Acconto [mese]` o `Conguaglio [mese]` con righe energetiche dettagliate del mese va invece incluso nel dettaglio mensile.
 
 MANCANZA DI DETTAGLIO ECONOMICO
 - `manca_dettaglio` e' un flag documentale.
@@ -406,7 +407,7 @@ def review_gpt_with_pdf(
         "Regola aggiuntiva:\n"
         "- Questo controllo serve a farti correggere la prima lettura del singolo documento prima del post-processing.\n"
         "- Se il caso NON contiene ricalcoli e il dettaglio del mese e' presente, verifica che la somma delle righe economiche corrisponda all'imponibile fiscale del mese.\n"
-        "- Se non torna, controlla se hai saltato una riga economica del mese (per esempio `Altre partite`) oppure se hai letto male l'imponibile del riepilogo fiscale.\n"
+        "- Se non torna, controlla se hai saltato una riga economica del mese oppure se hai letto male l'imponibile del riepilogo fiscale.\n"
         "- In un caso standard senza ricalcoli devi restituire l'imponibile fiscale corretto del documento e tutte le righe economiche del mese che lo compongono.\n"
         "- Per ogni mese, tieni nel dettaglio SOLO le righe che appartengono davvero a quel mese.\n"
         "- Se una riga e' un ricalcolo di altri mesi, NON farla contribuire al dettaglio del mese corrente: assegna il periodo corretto o mantienila come ricalcolo separato.\n"
@@ -414,7 +415,7 @@ def review_gpt_with_pdf(
         "- Se il documento contiene riepiloghi mensili o imponibili che includono altri periodi o ricalcoli, dai priorita alle righe esplicite del singolo mese.\n"
         "- Se il caso e' standard senza ricalcoli e il documento ha un `Riepilogo IVA`, ricontrolla con attenzione l`imponibile della fornitura nel riepilogo fiscale.\n"
         "- Se il riepilogo IVA riporta quote `Art. 15` o `Esclusa Art.15`, considera escluse dall'imponibile IVA solo quelle quote esplicitamente indicate: NON sottrarre tutta `Altre partite` se il PDF non lo dice.\n"
-        "- Se nel riepilogo economico del mese compare `Altre partite` e contribuisce al totale/imponibile, non saltarla: includila come macro-voce `altro`, salvo sia chiaramente solo more/sanzioni/solleciti esclusi.\n"
+        "- NON includere automaticamente `Altre partite`: includila solo se il testo mostra che e una vera voce energetica del mese; se e una partita finanziaria/contabile come `Anticipo fornitura E.E.`, compensazione, deposito, cauzione o imposta di bollo, escludila dal dettaglio mensile.\n"
         "- Se il dettaglio e' completo, fai tornare la somma delle righe economiche al valore corretto del periodo.\n"
         "- Se il documento contiene anche altri mesi o ricalcoli di altri periodi, tienili separati con le loro date corrette.\n"
         "- Valorizza correttamente i flag DI RIGA `presenza_ricalcolo`, `ricalcolo_aggregato_multi_mese` e `tipo_ricalcolo`: metti `si` solo sulla riga rettificata; se il periodo copre un solo mese, `ricalcolo_aggregato_multi_mese` deve restare `no`; usa `tipo_ricalcolo=importo`, `consumo` o `importo_e_consumo` solo sulle righe davvero rettificate.\n"

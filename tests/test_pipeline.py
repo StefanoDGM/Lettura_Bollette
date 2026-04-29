@@ -6,6 +6,7 @@ from src.pipeline.process_bolletta import (
     VAT_REPARSE_NOTE,
     enrich_extracted_rows,
     extract_vat_imponibile_from_text,
+    filter_financial_accounting_rows,
     find_detail_imponibile_issues,
     find_pdf_files,
     mark_issues_as_missing_detail,
@@ -127,7 +128,7 @@ class TestPipeline(unittest.TestCase):
 
         self.assertEqual(imponibile, Decimal("3617.97"))
 
-    def test_supplement_summary_macro_rows_adds_altre_partite_when_missing(self):
+    def test_supplement_summary_macro_rows_skips_generic_altre_partite_without_energy_detail(self):
         rows = [
             {
                 "data_inizio": "01/01/2024",
@@ -216,9 +217,91 @@ class TestPipeline(unittest.TestCase):
         )
 
         altre_partite_rows = [row for row in adjusted if row["dettaglio_voce"] == "Altre partite"]
+        self.assertEqual(len(altre_partite_rows), 0)
+
+    def test_supplement_summary_macro_rows_adds_altre_partite_when_context_is_clearly_energetic(self):
+        rows = [
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "importo": "100.00",
+                "imponibile_mese": "109.90",
+                "manca_dettaglio": "si",
+                "dettaglio_voce": "Materia energia",
+                "tipo_componente": "variabile",
+                "consumo_dettaglio_riga": "",
+                "quantita": "1000",
+                "prezzo_aliquota": "0.1",
+                "note": "",
+            }
+        ]
+        pdf_text = """
+        Sintesi degli importi fatturati energia elettrica
+        Altre partite € 9,90
+        Dettaglio altre partite: corrispettivo perequativo energia del mese 01/05/2024-31/05/2024 1000 kWh a 0,0099 €/kWh
+        """
+
+        adjusted = supplement_summary_macro_rows(
+            Path("sample.pdf"),
+            rows,
+            pdf_text=pdf_text,
+        )
+
+        altre_partite_rows = [row for row in adjusted if row["dettaglio_voce"] == "Altre partite"]
         self.assertEqual(len(altre_partite_rows), 1)
         self.assertEqual(altre_partite_rows[0]["importo"], "9.9")
-        self.assertEqual(altre_partite_rows[0]["data_fine"], "31/01/2024")
+        self.assertEqual(altre_partite_rows[0]["data_fine"], "31/05/2024")
+
+    def test_filter_financial_accounting_rows_removes_anticipo_fornitura_without_energy_detail(self):
+        rows = [
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Materia energia",
+                "tipo_componente": "variabile",
+                "quantita": "1000",
+                "unita_misura": "kWh",
+                "prezzo_aliquota": "0.10",
+                "importo": "100.00",
+                "note": "",
+            },
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Anticipo fornitura E.E. Maggio 2024",
+                "tipo_componente": "altro",
+                "quantita": "",
+                "unita_misura": "",
+                "prezzo_aliquota": "",
+                "importo": "-65573.77",
+                "note": "Riepilogo oneri diversi - altre partite",
+            },
+        ]
+
+        filtered = filter_financial_accounting_rows(rows)
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["dettaglio_voce"], "Materia energia")
+
+    def test_filter_financial_accounting_rows_keeps_energetic_acconto_rows(self):
+        rows = [
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Acconto Maggio 2024 - Materia energia",
+                "tipo_componente": "variabile",
+                "quantita": "1000",
+                "unita_misura": "kWh",
+                "prezzo_aliquota": "0.10",
+                "importo": "100.00",
+                "note": "",
+            }
+        ]
+
+        filtered = filter_financial_accounting_rows(rows)
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["dettaglio_voce"], "Acconto Maggio 2024 - Materia energia")
 
     def test_normalize_detail_flags_from_rows_marks_reconstructible_period_as_no(self):
         rows = [
