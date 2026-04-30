@@ -14,8 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from src.parser.bolletta_parser import parse_gpt_response
 
 # Modello principale + fallback
-MODEL_PRIMARY = os.environ.get("OPENAI_MODEL", "gpt-5")
-MODEL_FALLBACK = "gpt-5"
+MODEL_PRIMARY = os.environ.get("OPENAI_MODEL", "gpt-5.1")
+MODEL_FALLBACK = "gpt-5.1"
 ROOT = Path(__file__).resolve().parents[2]
 
 _client: OpenAI | None = None
@@ -94,6 +94,11 @@ FLAG DI RIGA OBBLIGATORI
   - `importo` = rettifica economica/tariffaria che non modifica il consumo del mese
   - `consumo` = rettifica del consumo/quantita del mese senza importo economico affidabile
   - `importo_e_consumo` = rettifica che coinvolge sia importi sia consumo/quantita
+- Se il PDF mostra che l`imponibile/totale fiscale del mese include anche partite finanziarie o contabili escluse dal dettaglio energetico del mese
+  (per esempio `Altre partite`, `Anticipo fornitura E.E.`, compensazioni di anticipo, cauzioni, bollo),
+  marca le righe energetiche del mese con `presenza_ricalcolo="si"` e `tipo_ricalcolo="importo"` cosi il mese venga trattato come rettificato.
+- Usa questa marcatura SOLO quando il PDF mostra chiaramente che la differenza nasce da partite finanziarie/contabili estranee al costo energetico del mese,
+  NON per qualsiasi semplice mismatch tra dettaglio e imponibile.
 - Se il PDF contiene solo diciture generiche come `(conguaglio)` nel titolo del periodo, `TOTALE BOLLETTA (con riserva di conguaglio)` o formule standard analoghe, NON basta da solo per mettere `presenza_ricalcolo="si"`.
 - In assenza di una vera riga di rettifica, lascia `presenza_ricalcolo="no"`, `ricalcolo_aggregato_multi_mese="no"` e `tipo_ricalcolo=""`.
 - NON trattare questi flag come documentali e NON ripeterli su tutte le righe dello stesso documento.
@@ -416,6 +421,7 @@ def review_gpt_with_pdf(
         "- Se il caso e' standard senza ricalcoli e il documento ha un `Riepilogo IVA`, ricontrolla con attenzione l`imponibile della fornitura nel riepilogo fiscale.\n"
         "- Se il riepilogo IVA riporta quote `Art. 15` o `Esclusa Art.15`, considera escluse dall'imponibile IVA solo quelle quote esplicitamente indicate: NON sottrarre tutta `Altre partite` se il PDF non lo dice.\n"
         "- NON includere automaticamente `Altre partite`: includila solo se il testo mostra che e una vera voce energetica del mese; se e una partita finanziaria/contabile come `Anticipo fornitura E.E.`, compensazione, deposito, cauzione o imposta di bollo, escludila dal dettaglio mensile.\n"
+        "- Se proprio queste partite finanziarie/contabili escluse sporcano l`imponibile del mese ma il dettaglio energetico del mese resta chiaro, marca le righe energetiche del mese con `presenza_ricalcolo=\"si\"` e `tipo_ricalcolo=\"importo\"`.\n"
         "- Se il dettaglio e' completo, fai tornare la somma delle righe economiche al valore corretto del periodo.\n"
         "- Se il documento contiene anche altri mesi o ricalcoli di altri periodi, tienili separati con le loro date corrette.\n"
         "- Valorizza correttamente i flag DI RIGA `presenza_ricalcolo`, `ricalcolo_aggregato_multi_mese` e `tipo_ricalcolo`: metti `si` solo sulla riga rettificata; se il periodo copre un solo mese, `ricalcolo_aggregato_multi_mese` deve restare `no`; usa `tipo_ricalcolo=importo`, `consumo` o `importo_e_consumo` solo sulle righe davvero rettificate.\n"

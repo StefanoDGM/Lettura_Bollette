@@ -776,6 +776,10 @@ def is_explicit_recalculation_row(row: dict) -> bool:
 
 
 def infer_tipo_ricalcolo(row: dict, category: str = "") -> str:
+    raw_value = normalize_tipo_ricalcolo(row.get("tipo_ricalcolo"))
+    if raw_value:
+        return raw_value
+
     recalc_category = str(category or row.get("categoria_parser", "")).strip().lower()
     if recalc_category not in {
         "evento_ricalcolo",
@@ -784,10 +788,6 @@ def infer_tipo_ricalcolo(row: dict, category: str = "") -> str:
         "totale_aggregato_multi_mese",
     }:
         return ""
-
-    raw_value = normalize_tipo_ricalcolo(row.get("tipo_ricalcolo"))
-    if raw_value:
-        return raw_value
 
     has_consumo_signal = row_has_consumo_recalc_signal(row)
     has_import_signal = parse_decimal_for_audit(row.get("importo")) is not None
@@ -860,13 +860,25 @@ def enrich_extracted_rows(rows: list[dict]) -> list[dict]:
     for category, row in zip(categories, rows):
         enriched = dict(row)
         enriched["categoria_parser"] = category
-        row_has_recalculation = category in {
+        raw_tipo_ricalcolo = normalize_tipo_ricalcolo(enriched.get("tipo_ricalcolo"))
+        raw_presenza_ricalcolo = normalize_si_no_flag(enriched.get("presenza_ricalcolo")) == "si"
+        row_has_recalculation = (
+            raw_presenza_ricalcolo
+            or bool(raw_tipo_ricalcolo)
+            or category in {
             "evento_ricalcolo",
             "evento_storno",
             "evento_acconto_precedente",
             "totale_aggregato_multi_mese",
         }
-        row_has_multi_month_aggregate = category == "totale_aggregato_multi_mese"
+        )
+        row_has_multi_month_aggregate = (
+            category == "totale_aggregato_multi_mese"
+            or (
+                normalize_si_no_flag(enriched.get("ricalcolo_aggregato_multi_mese")) == "si"
+                and row_has_true_multi_month_scope(enriched)
+            )
+        )
         enriched["presenza_ricalcolo"] = "si" if row_has_recalculation else "no"
         enriched["ricalcolo_aggregato_multi_mese"] = "si" if row_has_multi_month_aggregate else "no"
         enriched["tipo_ricalcolo"] = infer_tipo_ricalcolo(enriched, category)

@@ -312,13 +312,13 @@ def is_row_multi_month_recalc(row: pd.Series) -> bool:
 
 
 def infer_tipo_ricalcolo(row: pd.Series) -> str:
-    category = str(row.get("_categoria_parser", row.get("categoria_parser", "")) or "").strip().lower()
-    if category not in RECALC_EVENT_CATEGORIES:
-        return ""
-
     raw_value = normalize_tipo_ricalcolo(row.get("tipo_ricalcolo"))
     if raw_value:
         return raw_value
+
+    category = str(row.get("_categoria_parser", row.get("categoria_parser", "")) or "").strip().lower()
+    if category not in RECALC_EVENT_CATEGORIES:
+        return ""
 
     has_consumo_signal = row_has_consumo_recalc_signal(row)
     has_import_signal = pd.notna(row.get("_importo_num"))
@@ -426,7 +426,13 @@ def finalize_document_flags(prepared: pd.DataFrame) -> pd.DataFrame:
     prepared["categoria_parser"] = prepared.apply(infer_categoria_parser, axis=1)
     prepared["_categoria_parser"] = prepared["categoria_parser"].fillna("").astype(str).str.strip().str.lower()
 
-    prepared["_presenza_ricalcolo_bool"] = prepared["_categoria_parser"].apply(is_recalc_event_category)
+    raw_presence_flags = prepared["presenza_ricalcolo"].apply(parse_bool_si_no).fillna(False)
+    raw_tipo_flags = prepared["tipo_ricalcolo"].apply(normalize_tipo_ricalcolo).ne("")
+    prepared["_presenza_ricalcolo_bool"] = (
+        prepared["_categoria_parser"].apply(is_recalc_event_category)
+        | raw_presence_flags
+        | raw_tipo_flags
+    )
     prepared["_ricalcolo_multi_bool"] = prepared.apply(is_row_multi_month_recalc, axis=1)
     prepared["_dettaglio_ricostruzione_bool"] = prepared["dettaglio_ricostruzione_presente"].apply(parse_bool_si_no)
     prepared["_totale_non_confrontabile_bool"] = prepared[

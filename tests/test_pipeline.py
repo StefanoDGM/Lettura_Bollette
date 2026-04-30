@@ -429,6 +429,31 @@ class TestPipeline(unittest.TestCase):
             all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
         )
 
+    def test_enrich_extracted_rows_preserves_manual_import_recalculation_on_analytic_rows(self):
+        rows = [
+            {
+                "_source_file": "05_2024.pdf",
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "dettaglio_voce": "Acconto Maggio 2024 - Materia energia",
+                "importo": "64464.82",
+                "manca_dettaglio": "no",
+                "presenza_ricalcolo": "si",
+                "tipo_ricalcolo": "importo",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "riferimento_ricalcolo_da": "",
+                "riferimento_ricalcolo_a": "",
+                "categoria_parser": "",
+            }
+        ]
+
+        enriched = enrich_extracted_rows(rows)
+
+        self.assertEqual(enriched[0]["categoria_parser"], "riga_analitica_mese")
+        self.assertEqual(enriched[0]["presenza_ricalcolo"], "si")
+        self.assertEqual(enriched[0]["tipo_ricalcolo"], "importo")
+        self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
+
     def test_enrich_extracted_rows_does_not_treat_generic_conguaglio_wording_as_recalculation(self):
         rows = [
             {

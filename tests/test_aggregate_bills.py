@@ -60,7 +60,7 @@ class TestAggregateBills(unittest.TestCase):
                 "tipo_componente": "variabile",
                 "riferimento_ricalcolo_da": "",
                 "riferimento_ricalcolo_a": "",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "si",
                 "dettaglio_voce": "Quota variabile Prezzo mercato",
                 "unita_misura": "€/Smc",
@@ -82,7 +82,7 @@ class TestAggregateBills(unittest.TestCase):
                 "tipo_componente": "trasporto",
                 "riferimento_ricalcolo_da": "",
                 "riferimento_ricalcolo_a": "",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "si",
                 "dettaglio_voce": "Quota trasporto",
                 "unita_misura": "€/Smc",
@@ -104,7 +104,7 @@ class TestAggregateBills(unittest.TestCase):
                 "tipo_componente": "ricalcolo_aggregato",
                 "riferimento_ricalcolo_da": "01/10/2023",
                 "riferimento_ricalcolo_a": "31/12/2023",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "si",
                 "dettaglio_voce": "CORRISPETTIVI DI VENDITA - Ricalcolo tariffario",
                 "unita_misura": "",
@@ -212,7 +212,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_dettaglio_riga": "-100",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "no",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -235,6 +235,57 @@ class TestAggregateBills(unittest.TestCase):
         self.assertEqual(agg.loc[0, "ricalcolo_aggregato_multi_mese"], "no")
         self.assertEqual(agg.loc[0, "totale_documento_non_confrontabile_direttamente_con_mese_corrente"], "si")
         self.assertLess(int(agg.loc[0, "confidenza_percent"]), 100)
+
+    def test_manual_import_recalculation_flag_on_analytic_rows_forces_detail_sum(self):
+        rows = [
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "importo": "64464.82",
+                "imponibile_mese": "8891.05",
+                "consumo_totale": "337097",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "importo",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
+                "categoria_parser": "riga_analitica_mese",
+                "_source_file": "05_2024.pdf",
+                "dettaglio_voce": "Acconto Maggio 2024",
+            },
+            {
+                "data_inizio": "01/05/2024",
+                "data_fine": "31/05/2024",
+                "importo": "7669.65",
+                "imponibile_mese": "7669.65",
+                "consumo_totale": "",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "no",
+                "ricalcolo_aggregato_multi_mese": "no",
+                "tipo_ricalcolo": "importo",
+                "dettaglio_ricostruzione_presente": "si",
+                "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
+                "categoria_parser": "riga_analitica_mese",
+                "_source_file": "06_2024.pdf",
+                "dettaglio_voce": "Conguaglio Maggio 2024",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_path = tmp_dir_path / "input.csv"
+            output_path = tmp_dir_path / "output.xlsx"
+            pd.DataFrame(rows).to_csv(input_path, index=False)
+            agg = aggregate_bolletta_data(input_path, output_path)
+
+        self.assertEqual(len(agg), 1)
+        self.assertAlmostEqual(float(agg.loc[0, "totale_importi"]), 72134.47, places=2)
+        self.assertEqual(agg.loc[0, "importo_logica_usata"], "dettaglio_mese_con_ricalcolo")
+        self.assertEqual(agg.loc[0, "ricalcolo_presente"], "si")
+        self.assertEqual(agg.loc[0, "ricalcolo_importo_presente"], "si")
 
     def test_month_uses_base_imponibile_plus_later_recalculation_rows(self):
         rows = [
@@ -294,7 +345,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "900",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "no",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -330,7 +381,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "5963",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "si",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -346,7 +397,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "5963",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "si",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -362,7 +413,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "5963",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "si",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -378,7 +429,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "5963",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "si",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
@@ -394,7 +445,7 @@ class TestAggregateBills(unittest.TestCase):
                 "consumo_totale": "5963",
                 "manca_dettaglio": "no",
                 "manca_dettaglio_consumo": "si",
-                "presenza_ricalcolo": "si",
+                "presenza_ricalcolo": "no",
                 "ricalcolo_aggregato_multi_mese": "no",
                 "dettaglio_ricostruzione_presente": "si",
                 "totale_documento_puo_non_coincidere_con_mese_corrente": "si",
