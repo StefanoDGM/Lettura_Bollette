@@ -429,6 +429,49 @@ class TestPipeline(unittest.TestCase):
             all(row["totale_documento_puo_non_coincidere_con_mese_corrente"] == "si" for row in enriched)
         )
 
+    def test_enrich_extracted_rows_marks_aggregate_only_when_row_is_not_month_specific(self):
+        rows = [
+            {
+                "_source_file": "bolletta_cessazione.pdf",
+                "data_inizio": "01/12/2025",
+                "data_fine": "31/12/2025",
+                "dettaglio_voce": "Quota variabile",
+                "unita_misura": "EUR/smc",
+                "quantita": "15707",
+                "importo": "9150.54",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "riferimento_ricalcolo_da": "01/12/2025",
+                "riferimento_ricalcolo_a": "28/02/2026",
+                "categoria_parser": "totale_aggregato_multi_mese",
+            },
+            {
+                "_source_file": "bolletta_cessazione.pdf",
+                "data_inizio": "",
+                "data_fine": "",
+                "dettaglio_voce": "Restituzione per ricalcoli",
+                "importo": "-682.46",
+                "manca_dettaglio": "no",
+                "manca_dettaglio_consumo": "si",
+                "presenza_ricalcolo": "si",
+                "ricalcolo_aggregato_multi_mese": "si",
+                "riferimento_ricalcolo_da": "01/12/2025",
+                "riferimento_ricalcolo_a": "28/02/2026",
+                "categoria_parser": "totale_aggregato_multi_mese",
+            },
+        ]
+
+        enriched = enrich_extracted_rows(rows)
+
+        self.assertEqual(enriched[0]["categoria_parser"], "evento_ricalcolo")
+        self.assertEqual(enriched[0]["presenza_ricalcolo"], "si")
+        self.assertEqual(enriched[0]["ricalcolo_aggregato_multi_mese"], "no")
+        self.assertEqual(enriched[1]["categoria_parser"], "totale_aggregato_multi_mese")
+        self.assertEqual(enriched[1]["presenza_ricalcolo"], "si")
+        self.assertEqual(enriched[1]["ricalcolo_aggregato_multi_mese"], "si")
+
     def test_enrich_extracted_rows_preserves_manual_import_recalculation_on_analytic_rows(self):
         rows = [
             {

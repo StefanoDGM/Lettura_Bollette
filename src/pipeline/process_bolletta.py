@@ -749,10 +749,38 @@ def spans_multiple_months(data_inizio: str, data_fine: str) -> bool:
     return (start_dt.year, start_dt.month) != (end_dt.year, end_dt.month)
 
 
+def row_has_month_specific_period(row: dict) -> bool:
+    data_inizio = str(row.get("data_inizio", "")).strip()
+    data_fine = str(row.get("data_fine", "")).strip()
+    start_dt = parse_date_text(data_inizio)
+    end_dt = parse_date_text(data_fine)
+    if pd.isna(start_dt) or pd.isna(end_dt):
+        return False
+    return (start_dt.year, start_dt.month) == (end_dt.year, end_dt.month)
+
+
+def row_month_is_inside_recalculation_scope(row: dict) -> bool:
+    data_inizio = str(row.get("data_inizio", "")).strip()
+    data_fine = str(row.get("data_fine", "")).strip()
+    rif_da = str(row.get("riferimento_ricalcolo_da", "")).strip()
+    rif_a = str(row.get("riferimento_ricalcolo_a", "")).strip()
+    start_dt = parse_date_text(data_inizio)
+    end_dt = parse_date_text(data_fine)
+    ref_start_dt = parse_date_text(rif_da)
+    ref_end_dt = parse_date_text(rif_a)
+    if any(pd.isna(value) for value in (start_dt, end_dt, ref_start_dt, ref_end_dt)):
+        return False
+    return start_dt >= ref_start_dt and end_dt <= ref_end_dt
+
+
 def row_has_true_multi_month_scope(row: dict) -> bool:
     rif_da = str(row.get("riferimento_ricalcolo_da", "")).strip()
     rif_a = str(row.get("riferimento_ricalcolo_a", "")).strip()
-    return bool(rif_da and rif_a and spans_multiple_months(rif_da, rif_a))
+    if not (rif_da and rif_a and spans_multiple_months(rif_da, rif_a)):
+        return False
+    if row_has_month_specific_period(row) and row_month_is_inside_recalculation_scope(row):
+        return False
+    return True
 
 
 def group_rows_by_period(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
@@ -812,6 +840,11 @@ def derive_categoria_parser(row: dict) -> str:
 
     if any(keyword in text for keyword in SUPPORTO_CONSUMI_KEYWORDS) and not str(row.get("importo", "")).strip():
         return "tabella_supporto_consumi_mensili"
+
+    if raw_category == "totale_aggregato_multi_mese" and not (
+        row_has_month_specific_period(row) and row_month_is_inside_recalculation_scope(row)
+    ):
+        return raw_category
 
     if row_has_true_multi_month_scope(row):
         return "totale_aggregato_multi_mese"

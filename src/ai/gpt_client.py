@@ -90,6 +90,8 @@ FLAG DI RIGA OBBLIGATORI
 - Se nello stesso documento ci sono 200 righe normali del mese corrente e 1 riga riferita a un mese precedente, metti `presenza_ricalcolo="si"` SOLO sulla riga del mese precedente; tutte le righe normali del mese corrente restano `no`.
 - `ricalcolo_aggregato_multi_mese` = "si" SOLO sulla singola riga che rappresenta davvero un ricalcolo/storno riferito a piu mesi insieme o a un intervallo multi-mese non allocabile direttamente a un solo mese.
 - Se il riferimento del ricalcolo e' un solo mese (es. `01/05/2024` -> `31/05/2024`), allora `presenza_ricalcolo="si"` ma `ricalcolo_aggregato_multi_mese="no"`.
+- Se una riga dentro un blocco "Ricalcoli" ha gia un periodo mensile puntuale (es. `dal 01/12/25 al 31/12/25`), NON marcarla come `ricalcolo_aggregato_multi_mese`: e' una riga mensile di ricalcolo gia allocabile.
+- Marca `ricalcolo_aggregato_multi_mese="si"` solo per righe davvero non mensili o aggregate, ad esempio importi unici senza periodo puntuale come `Restituzione per ricalcoli` riferiti a piu mesi.
 - `tipo_ricalcolo` deve valere SOLO su righe con `presenza_ricalcolo="si"` e puo essere:
   - `importo` = rettifica economica/tariffaria che non modifica il consumo del mese
   - `consumo` = rettifica del consumo/quantita del mese senza importo economico affidabile

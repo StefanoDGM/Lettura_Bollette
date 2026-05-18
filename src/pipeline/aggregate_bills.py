@@ -299,7 +299,38 @@ def row_has_consumo_recalc_signal(row: pd.Series) -> bool:
 
 
 def has_true_multi_month_scope(row: pd.Series) -> bool:
-    return len(month_range(row.get("_rif_da_dt"), row.get("_rif_a_dt"))) > 1
+    if len(month_range(row.get("_rif_da_dt"), row.get("_rif_a_dt"))) <= 1:
+        return False
+    if row_has_month_specific_period(row) and row_month_is_inside_recalculation_scope(row):
+        return False
+    return True
+
+
+def row_has_month_specific_period(row: pd.Series) -> bool:
+    start_date = row.get("_data_inizio_dt")
+    end_date = row.get("_data_fine_dt")
+    if pd.isna(start_date) or pd.isna(end_date):
+        start_date = parse_date(row.get("data_inizio"))
+        end_date = parse_date(row.get("data_fine"))
+    if pd.isna(start_date) or pd.isna(end_date):
+        return False
+    return (start_date.year, start_date.month) == (end_date.year, end_date.month)
+
+
+def row_month_is_inside_recalculation_scope(row: pd.Series) -> bool:
+    start_date = row.get("_data_inizio_dt")
+    end_date = row.get("_data_fine_dt")
+    ref_start_date = row.get("_rif_da_dt")
+    ref_end_date = row.get("_rif_a_dt")
+    if pd.isna(start_date) or pd.isna(end_date):
+        start_date = parse_date(row.get("data_inizio"))
+        end_date = parse_date(row.get("data_fine"))
+    if pd.isna(ref_start_date) or pd.isna(ref_end_date):
+        ref_start_date = parse_date(row.get("riferimento_ricalcolo_da"))
+        ref_end_date = parse_date(row.get("riferimento_ricalcolo_a"))
+    if any(pd.isna(value) for value in (start_date, end_date, ref_start_date, ref_end_date)):
+        return False
+    return start_date >= ref_start_date and end_date <= ref_end_date
 
 
 def is_recalc_event_category(category: str) -> bool:
@@ -390,6 +421,11 @@ def infer_categoria_parser(row: pd.Series) -> str:
 
     if "consumi relativi agli ultimi mesi" in text and pd.isna(row.get("_importo_num")):
         return "tabella_supporto_consumi_mensili"
+
+    if raw_category == "totale_aggregato_multi_mese" and not (
+        row_has_month_specific_period(row) and row_month_is_inside_recalculation_scope(row)
+    ):
+        return raw_category
 
     if has_true_multi_month_scope(row):
         return "totale_aggregato_multi_mese"
